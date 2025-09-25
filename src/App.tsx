@@ -7,16 +7,11 @@ import HistoricalTesting from './components/HistoricalTesting';
 import { PatternType, Alert } from './types';
 import { GapScanner } from './services/GapScanner';
 
-// Simplified pattern configs - minimal blessed-like styling
+// Pattern configs for active scanners - G-Class styling
 const PATTERN_CONFIGS: Record<PatternType, { title: string; color: string; priority: number }> = {
-  'ToppingTail1m': { title: 'Topping Tail 1m', color: '#ffff00', priority: 1 },
-  'ToppingTail5m': { title: 'Topping Tail 5m', color: '#ffff00', priority: 1 },
-  'HODBreakCloseUnder': { title: 'HOD Break Close Under', color: '#ffff00', priority: 1 },
-  'New1mLowNearHOD': { title: 'New 1m Low Near HOD', color: '#00ffff', priority: 2 },
-  'EMA200Reject': { title: 'EMA200 Reject', color: '#00ffff', priority: 2 },
-  'DoubleTop': { title: 'Double Top', color: '#ff00ff', priority: 3 },
-  'TripleTop': { title: 'Triple Top', color: '#ff00ff', priority: 3 },
-  'Run4PlusGreenThenRed': { title: '4+ Green Then Red', color: '#ff00ff', priority: 3 },
+  'ToppingTail1m': { title: 'Topping Tail 1m', color: '#c9aa96', priority: 1 },
+  'HODBreakCloseUnder': { title: 'HOD Break Close Under', color: '#e6d7c8', priority: 1 },
+  'Run4PlusGreenThenRed': { title: '4+ Green Then Red', color: '#a08b7a', priority: 3 },
 };
 
 // Performance constants
@@ -27,6 +22,7 @@ function App() {
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [symbols, setSymbols] = useState<string[]>([]);
   const [isConnected, setIsConnected] = useState(false);
+  const [isInitializing, setIsInitializing] = useState(true);
   const [gapScanner] = useState(() => new GapScanner());
   const [stats, setStats] = useState({
     totalAlerts: 0,
@@ -41,6 +37,7 @@ function App() {
     const initializeScanner = async () => {
       try {
         console.log('Initializing Gap Scanner...');
+        setIsInitializing(true);
         setIsConnected(true);
 
         console.log('Scanner initialization starting...');
@@ -79,6 +76,9 @@ function App() {
 
         console.log(`Tracking ${gapSymbols.length} gap stocks: ${gapSymbols.join(', ')}`);
 
+        // Scanner initialization complete
+        setIsInitializing(false);
+
         // Set up alert callback with pagination
         gapScanner.onAlert((alert: Alert) => {
           setAlerts(prev => {
@@ -99,6 +99,7 @@ function App() {
         console.error('Failed to initialize scanner:', error);
         console.error('Error details:', error);
         setIsConnected(false);
+        setIsInitializing(false);
       }
     };
 
@@ -158,60 +159,116 @@ function App() {
     setVoiceAlertsEnabled(enabled);
   }, []);
 
+  // Keyboard navigation support
+  useEffect(() => {
+    const handleKeyPress = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey) {
+        switch (e.key) {
+          case '1':
+            e.preventDefault();
+            handleLayoutModeChange('grid');
+            break;
+          case '2':
+            e.preventDefault();
+            handleLayoutModeChange('unified');
+            break;
+          case '3':
+            e.preventDefault();
+            handleLayoutModeChange('historical');
+            break;
+          case 'v':
+            e.preventDefault();
+            setVoiceAlertsEnabled(prev => !prev);
+            break;
+        }
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyPress);
+    return () => document.removeEventListener('keydown', handleKeyPress);
+  }, [handleLayoutModeChange]);
+
   return (
     <div className="App">
       <div className="app-controls">
-        <div className="layout-toggle">
+        <div className="layout-toggle" role="tablist" aria-label="Layout view options">
           <button
             className={`toggle-btn ${layoutMode === 'grid' ? 'active' : ''}`}
             onClick={() => handleLayoutModeChange('grid')}
+            role="tab"
+            aria-selected={layoutMode === 'grid'}
+            aria-controls="main-content"
+            title="Switch to grid view (Ctrl+1)"
+            disabled={isInitializing}
           >
-            GRID VIEW
+            <span>GRID VIEW</span>
+            {isInitializing && layoutMode === 'grid' && <span className="loading-dot" aria-hidden="true">●</span>}
           </button>
           <button
             className={`toggle-btn ${layoutMode === 'unified' ? 'active' : ''}`}
             onClick={() => handleLayoutModeChange('unified')}
+            role="tab"
+            aria-selected={layoutMode === 'unified'}
+            aria-controls="main-content"
+            title="Switch to unified feed (Ctrl+2)"
+            disabled={isInitializing}
           >
-            UNIFIED FEED
+            <span>UNIFIED FEED</span>
+            {isInitializing && layoutMode === 'unified' && <span className="loading-dot" aria-hidden="true">●</span>}
           </button>
           <button
             className={`toggle-btn ${layoutMode === 'historical' ? 'active' : ''}`}
             onClick={() => handleLayoutModeChange('historical')}
+            role="tab"
+            aria-selected={layoutMode === 'historical'}
+            aria-controls="main-content"
+            title="Switch to historical testing (Ctrl+3)"
           >
-            HISTORICAL TEST
+            <span>HISTORICAL TEST</span>
           </button>
         </div>
 
         <div className="voice-toggle">
-          <label className="voice-toggle-label">
+          <label className="voice-toggle-label" title="Toggle voice alerts (Ctrl+V)">
             <input
               type="checkbox"
               checked={voiceAlertsEnabled}
               onChange={(e) => handleVoiceAlertsChange(e.target.checked)}
+              aria-describedby="voice-status"
             />
             <span className="voice-toggle-text">
               VOICE ALERTS
             </span>
-            <span className={`voice-status ${voiceAlertsEnabled ? 'on' : 'off'}`}>
+            <span
+              id="voice-status"
+              className={`voice-status ${voiceAlertsEnabled ? 'on' : 'off'}`}
+              aria-live="polite"
+            >
               {voiceAlertsEnabled ? 'ON' : 'OFF'}
             </span>
           </label>
         </div>
       </div>
 
-      {layoutMode === 'grid' ? (
-        <div className="scanner-grid">
-          {Object.entries(PATTERN_CONFIGS).map(([pattern, config]) => (
-            <ScannerWindow
-              key={pattern}
-              title={config.title}
-              color={config.color}
-              priority={config.priority}
-              alerts={getAlertsForPattern(pattern as PatternType)}
-              pattern={pattern as PatternType}
-            />
-          ))}
-        </div>
+      <main id="main-content" role="main" aria-label={`${layoutMode} view`}>
+        {layoutMode === 'grid' ? (
+          <div className="scanner-grid" role="grid" aria-label="Pattern scanner windows">
+            {isInitializing && (
+              <div className="loading-overlay" aria-live="polite">
+                <span className="loading-text">INITIALIZING SCANNER...</span>
+              </div>
+            )}
+            {Object.entries(PATTERN_CONFIGS).map(([pattern, config]) => (
+              <ScannerWindow
+                key={pattern}
+                title={config.title}
+                color={config.color}
+                priority={config.priority}
+                alerts={getAlertsForPattern(pattern as PatternType)}
+                pattern={pattern as PatternType}
+              />
+            ))}
+          </div>
       ) : layoutMode === 'unified' ? (
         <div className="unified-layout">
           <UnifiedAlertFeed
@@ -228,7 +285,8 @@ function App() {
             gapScanner={gapScanner}
           />
         </div>
-      )}
+        )}
+      </main>
 
       {layoutMode !== 'unified' && (
         <StatusBar

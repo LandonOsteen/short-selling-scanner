@@ -17,14 +17,9 @@ interface HistoricalResults {
 }
 
 const PATTERN_CONFIGS: Record<PatternType, { title: string; color: string; priority: number }> = {
-  'ToppingTail1m': { title: 'Topping Tail 1m', color: '#ffff00', priority: 1 },
-  'ToppingTail5m': { title: 'Topping Tail 5m', color: '#ffff00', priority: 1 },
-  'HODBreakCloseUnder': { title: 'HOD Break Close Under', color: '#ffff00', priority: 1 },
-  'New1mLowNearHOD': { title: 'New 1m Low Near HOD', color: '#00ffff', priority: 2 },
-  'EMA200Reject': { title: 'EMA200 Reject', color: '#00ffff', priority: 2 },
-  'DoubleTop': { title: 'Double Top', color: '#ff00ff', priority: 3 },
-  'TripleTop': { title: 'Triple Top', color: '#ff00ff', priority: 3 },
-  'Run4PlusGreenThenRed': { title: '4+ Green Then Red', color: '#ff00ff', priority: 3 },
+  'ToppingTail1m': { title: 'Topping Tail 1m', color: '#c9aa96', priority: 1 },
+  'HODBreakCloseUnder': { title: 'HOD Break Close Under', color: '#e6d7c8', priority: 1 },
+  'Run4PlusGreenThenRed': { title: '4+ Green Then Red', color: '#a08b7a', priority: 3 },
 };
 
 const HistoricalTesting: React.FC<HistoricalTestingProps> = ({ gapScanner }) => {
@@ -95,12 +90,7 @@ const HistoricalTesting: React.FC<HistoricalTestingProps> = ({ gapScanner }) => 
       // Calculate pattern breakdown
       const patternBreakdown: Record<PatternType, number> = {
         'ToppingTail1m': 0,
-        'ToppingTail5m': 0,
         'HODBreakCloseUnder': 0,
-        'New1mLowNearHOD': 0,
-        'EMA200Reject': 0,
-        'DoubleTop': 0,
-        'TripleTop': 0,
         'Run4PlusGreenThenRed': 0,
       };
 

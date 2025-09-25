@@ -1,11 +1,6 @@
 export type PatternType =
   | 'ToppingTail1m'
-  | 'ToppingTail5m'
   | 'HODBreakCloseUnder'
-  | 'New1mLowNearHOD'
-  | 'EMA200Reject'
-  | 'DoubleTop'
-  | 'TripleTop'
   | 'Run4PlusGreenThenRed';
 
 export interface Alert {
@@ -16,6 +11,7 @@ export interface Alert {
   detail: string;
   price: number;
   volume: number;
+  gapPercent?: number;
   historical?: boolean;
 }
 

@@ -14,16 +14,11 @@ interface UnifiedAlertFeedProps {
   symbols?: string[];
 }
 
-// Pattern configuration for colors and labels
+// Pattern configuration for G-Class colors and labels
 const PATTERN_CONFIGS: Record<PatternType, { title: string; color: string; priority: number }> = {
-  'ToppingTail1m': { title: 'Topping Tail 1m', color: '#ffff00', priority: 1 },
-  'ToppingTail5m': { title: 'Topping Tail 5m', color: '#ffff00', priority: 1 },
-  'HODBreakCloseUnder': { title: 'HOD Break Close Under', color: '#ffff00', priority: 1 },
-  'New1mLowNearHOD': { title: 'New 1m Low Near HOD', color: '#00ffff', priority: 2 },
-  'EMA200Reject': { title: 'EMA200 Reject', color: '#00ffff', priority: 2 },
-  'DoubleTop': { title: 'Double Top', color: '#ff00ff', priority: 3 },
-  'TripleTop': { title: 'Triple Top', color: '#ff00ff', priority: 3 },
-  'Run4PlusGreenThenRed': { title: '4+ Green Then Red', color: '#ff00ff', priority: 3 },
+  'ToppingTail1m': { title: 'Topping Tail 1m', color: '#c9aa96', priority: 1 },
+  'HODBreakCloseUnder': { title: 'HOD Break Close Under', color: '#e6d7c8', priority: 1 },
+  'Run4PlusGreenThenRed': { title: '4+ Green Then Red', color: '#a08b7a', priority: 3 },
 };
 
 const UnifiedAlertFeed: React.FC<UnifiedAlertFeedProps> = ({
@@ -38,7 +33,6 @@ const UnifiedAlertFeed: React.FC<UnifiedAlertFeedProps> = ({
   // Filter state
   const [symbolFilter, setSymbolFilter] = useState('');
   const [patternFilter, setPatternFilter] = useState<PatternType | 'all'>('all');
-  const [priorityFilter, setPriorityFilter] = useState<number | 'all'>('all');
   const [timeFilter, setTimeFilter] = useState<'all' | '1h' | '30m' | '10m' | '5m'>('all');
   const [showFilters, setShowFilters] = useState(false);
 
@@ -78,10 +72,6 @@ const UnifiedAlertFeed: React.FC<UnifiedAlertFeedProps> = ({
         return false;
       }
 
-      // Priority filter
-      if (priorityFilter !== 'all' && config.priority !== priorityFilter) {
-        return false;
-      }
 
       // Time filter
       if (timeFilter !== 'all') {
@@ -111,19 +101,18 @@ const UnifiedAlertFeed: React.FC<UnifiedAlertFeedProps> = ({
       const configB = PATTERN_CONFIGS[b.type];
       return configA.priority - configB.priority;
     });
-  }, [alerts, symbolFilter, patternFilter, priorityFilter, timeFilter]);
+  }, [alerts, symbolFilter, patternFilter, timeFilter]);
 
-  // Get unique symbols for dropdown
-  const uniqueSymbols = useMemo(() => {
-    const symbols = new Set(alerts.map(alert => alert.symbol));
-    return Array.from(symbols).sort();
-  }, [alerts]);
+  // Get unique symbols for dropdown (commented out for now as it's not used)
+  // const uniqueSymbols = useMemo(() => {
+  //   const symbols = new Set(alerts.map(alert => alert.symbol));
+  //   return Array.from(symbols).sort();
+  // }, [alerts]);
 
   // Clear filters handler
   const clearFilters = useCallback(() => {
     setSymbolFilter('');
     setPatternFilter('all');
-    setPriorityFilter('all');
     setTimeFilter('all');
   }, []);
 
@@ -159,13 +148,8 @@ const UnifiedAlertFeed: React.FC<UnifiedAlertFeedProps> = ({
             onClick={() => setShowFilters(!showFilters)}
             title="Toggle Filters"
           >
-            FILTERS
+            <span>FILTERS</span>
           </button>
-          <div className="feed-legend">
-            <span className="legend-item priority-1">HIGH</span>
-            <span className="legend-item priority-2">MED</span>
-            <span className="legend-item priority-3">LOW</span>
-          </div>
         </div>
       </div>
 
@@ -199,19 +183,6 @@ const UnifiedAlertFeed: React.FC<UnifiedAlertFeedProps> = ({
               </select>
             </div>
 
-            <div className="filter-group">
-              <label>Priority:</label>
-              <select
-                value={priorityFilter}
-                onChange={(e) => setPriorityFilter(e.target.value === 'all' ? 'all' : parseInt(e.target.value))}
-                className="filter-select"
-              >
-                <option value="all">All</option>
-                <option value={1}>High</option>
-                <option value={2}>Medium</option>
-                <option value={3}>Low</option>
-              </select>
-            </div>
 
             <div className="filter-group">
               <label>Time:</label>
@@ -260,7 +231,7 @@ const UnifiedAlertFeed: React.FC<UnifiedAlertFeedProps> = ({
             return (
               <div
                 key={alert.id}
-                className={`alert-item priority-${config.priority} ${isRecent ? 'recent' : ''}`}
+                className={`alert-item ${isRecent ? 'recent' : ''}`}
                 style={{ borderLeftColor: config.color }}
               >
                 <div className="alert-main">
@@ -277,6 +248,9 @@ const UnifiedAlertFeed: React.FC<UnifiedAlertFeedProps> = ({
                   <div className="alert-details">
                     <span className="alert-price">${alert.price.toFixed(2)}</span>
                     <span className="alert-volume">{(alert.volume / 1000).toFixed(0)}k vol</span>
+                    {alert.gapPercent !== undefined && alert.gapPercent !== null && (
+                      <span className="alert-gap">{alert.gapPercent > 0 ? '+' : ''}{alert.gapPercent.toFixed(1)}% gap</span>
+                    )}
                   </div>
                 </div>
 

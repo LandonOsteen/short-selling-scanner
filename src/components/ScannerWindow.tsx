@@ -39,14 +39,9 @@ const ScannerWindow: React.FC<ScannerWindowProps> = ({
 
   const getPatternDescription = (pattern: string): string => {
     const descriptions = {
-      'ToppingTail1m': '1-minute topping tail: ≥50% upper wick + red close',
-      'ToppingTail5m': '5-minute topping tail: ≥50% upper wick + red close',
+      'ToppingTail1m': '1-minute topping tail pattern near HOD',
       'HODBreakCloseUnder': 'HOD break and close back under the HOD level',
-      'New1mLowNearHOD': 'New 1-minute low near pre-market HOD level',
-      'EMA200Reject': 'Break above and close below 200 EMA daily resistance',
-      'DoubleTop': 'Double top within few cents of key level',
-      'TripleTop': 'Triple top within few cents of key level',
-      'Run4PlusGreenThenRed': '4+ green 1-minute candles then red close'
+      'Run4PlusGreenThenRed': 'Multiple green candles followed by red close'
     };
     return descriptions[pattern as keyof typeof descriptions] || 'Pattern description';
   };
