@@ -1,0 +1,130 @@
+/* Terminal-style Status Bar */
+.status-bar {
+  background: #1a1a1a;
+  border-top: 2px solid #333;
+  color: #00ff00;
+  font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', monospace;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 8px 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  min-height: 40px;
+  user-select: none;
+  position: relative;
+  overflow: hidden;
+}
+
+.status-section {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  z-index: 2;
+}
+
+.status-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.status-label {
+  color: #888;
+  font-size: 10px;
+  letter-spacing: 0.5px;
+}
+
+.status-value {
+  color: #ffffff;
+  font-weight: bold;
+}
+
+.status-value.connected {
+  color: #00ff00;
+}
+
+.status-value.disconnected {
+  color: #ff4444;
+}
+
+.status-separator {
+  color: #555;
+  font-weight: normal;
+  margin: 0 4px;
+}
+
+/* Symbol ticker background */
+.symbol-ticker {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  overflow: hidden;
+  z-index: 1;
+  opacity: 0.1;
+}
+
+.ticker-content {
+  display: flex;
+  white-space: nowrap;
+  animation: scroll-ticker 30s linear infinite;
+  color: #333;
+  font-size: 14px;
+  line-height: 40px;
+  font-weight: bold;
+}
+
+.ticker-symbol {
+  margin-right: 20px;
+}
+
+@keyframes scroll-ticker {
+  0% {
+    transform: translateX(100%);
+  }
+  100% {
+    transform: translateX(-100%);
+  }
+}
+
+/* Responsive adjustments */
+@media (max-width: 1200px) {
+  .status-bar {
+    font-size: 10px;
+    padding: 6px 12px;
+    gap: 12px;
+  }
+
+  .status-section {
+    gap: 12px;
+  }
+}
+
+@media (max-width: 768px) {
+  .status-bar {
+    flex-direction: column;
+    gap: 8px;
+    min-height: 60px;
+  }
+
+  .status-section {
+    gap: 8px;
+  }
+
+  .status-item {
+    flex-direction: column;
+    gap: 2px;
+    text-align: center;
+  }
+
+  .status-separator {
+    display: none;
+  }
+
+  .symbol-ticker {
+    display: none;
+  }
+}

@@ -1,0 +1,246 @@
+/* Minimal Blessed-style Scanner Window */
+.scanner-window {
+  background: #000;
+  border: 1px solid var(--window-color, #666);
+  font-family: monospace;
+  font-size: 12px;
+  line-height: 1.3;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 250px;
+  overflow: hidden;
+}
+
+/* Priority-based styling - minimal */
+.scanner-window.high-priority {
+  border-width: 2px;
+}
+
+.scanner-window.medium-priority {
+  border-style: dashed;
+}
+
+.scanner-window.low-priority {
+  opacity: 0.8;
+}
+
+/* Simple header like blessed */
+.window-header {
+  background: #111;
+  border-bottom: 1px solid var(--window-color);
+  padding: 4px 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  user-select: none;
+}
+
+.window-controls {
+  width: 20px; /* placeholder space */
+}
+
+.control-dot {
+  display: none; /* remove macOS dots for blessed style */
+}
+
+.window-title {
+  color: var(--window-color);
+  font-weight: normal;
+  font-size: 12px;
+  text-align: left;
+  flex: 1;
+}
+
+.alert-count {
+  min-width: 50px;
+  text-align: right;
+}
+
+.alert-badge {
+  color: var(--window-color);
+  font-size: 11px;
+  font-weight: normal;
+}
+
+/* Pattern description - minimal */
+.pattern-description {
+  background: #000;
+  padding: 2px 8px;
+  border-bottom: 1px solid #333;
+  color: #666;
+  font-size: 10px;
+}
+
+/* Content area - blessed style */
+.window-content {
+  flex: 1;
+  padding: 4px 8px;
+  overflow-y: auto;
+  background: #000;
+  color: #fff;
+}
+
+/* Minimal scrollbar */
+.window-content::-webkit-scrollbar {
+  width: 4px;
+}
+
+.window-content::-webkit-scrollbar-track {
+  background: #111;
+}
+
+.window-content::-webkit-scrollbar-thumb {
+  background: #333;
+}
+
+/* No alerts state */
+.no-alerts {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  height: 100%;
+  color: #555;
+}
+
+.terminal-line {
+  margin-bottom: 8px;
+}
+
+.prompt {
+  color: #aaa;
+  font-weight: normal;
+}
+
+.command {
+  color: #666;
+  margin-left: 4px;
+}
+
+.terminal-cursor {
+  color: #aaa;
+  animation: blink 1s infinite;
+  font-size: 11px;
+}
+
+@keyframes blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+
+/* Alert lines - blessed style */
+.alert-line {
+  margin-bottom: 8px;
+  padding: 2px 0;
+  border-left: 1px solid transparent;
+  padding-left: 4px;
+}
+
+.alert-line.live {
+  border-left-color: var(--window-color);
+}
+
+.alert-line.historical {
+  border-left-color: #333;
+  opacity: 0.6;
+}
+
+.alert-header {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 2px;
+  font-size: 10px;
+}
+
+.timestamp {
+  color: #888;
+  font-family: monospace;
+}
+
+.symbol {
+  color: var(--window-color);
+  font-weight: bold;
+  font-size: 10px;
+}
+
+.price {
+  color: #fff;
+  font-weight: normal;
+}
+
+.volume {
+  color: #aaa;
+}
+
+.historical-tag {
+  color: #666;
+  font-size: 8px;
+}
+
+.alert-detail {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.alert-detail .prompt {
+  color: var(--window-color);
+  font-weight: bold;
+  flex-shrink: 0;
+}
+
+.detail-text {
+  color: #cccccc;
+  line-height: 1.3;
+}
+
+/* Window status bar - minimal */
+.window-status {
+  background: #111;
+  border-top: 1px solid #333;
+  padding: 2px 8px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 9px;
+  color: #666;
+}
+
+.status-text {
+  font-family: monospace;
+}
+
+.pattern-type {
+  color: var(--window-color);
+  font-weight: bold;
+}
+
+/* Responsive adjustments */
+@media (max-width: 1200px) {
+  .scanner-window {
+    font-size: 11px;
+    min-height: 250px;
+  }
+
+  .alert-header {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+}
+
+@media (max-width: 768px) {
+  .scanner-window {
+    font-size: 10px;
+    min-height: 200px;
+  }
+
+  .window-header {
+    padding: 6px 8px;
+  }
+
+  .window-content {
+    padding: 6px 8px;
+  }
+}
