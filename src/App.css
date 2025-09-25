@@ -35,8 +35,10 @@
   --border-focus: #e6d7c8;
 
   /* G-Class Design System */
+  --radius: 4px; /* Standard radius */
   --radius-sharp: 2px; /* Sharp, angular like G-Class */
   --radius-soft: 8px;
+  --shadow-subtle: 0 2px 8px rgba(0, 0, 0, 0.15);
   --shadow-luxury: 0 8px 32px rgba(201, 170, 150, 0.12);
   --shadow-deep: 0 16px 48px rgba(0, 0, 0, 0.8);
 
@@ -194,76 +196,157 @@ body {
   100% { left: 100%; }
 }
 
-/* G-Class Voice Control System */
-.voice-toggle {
+/* G-Class Alerts Control Panel */
+.alerts-control-panel {
   display: flex;
-  align-items: center;
-}
-
-.voice-toggle-label {
-  display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 12px;
+  min-width: 200px;
+}
+
+.alerts-toggles {
+  display: flex;
+  gap: 16px;
+}
+
+.alert-toggle-group {
+  display: flex;
+  align-items: center;
+}
+
+.alert-toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   cursor: pointer;
-  font-size: 11px;
   color: var(--text-secondary);
-  font-weight: var(--font-weight-semibold);
-  letter-spacing: 0.8px;
+  font-weight: var(--font-weight-medium);
   text-transform: uppercase;
-  transition: all 0.3s ease;
-  padding: 8px 16px;
-  border-radius: var(--radius-sharp);
-  border: 1px solid transparent;
+  letter-spacing: 0.8px;
+  font-size: 10px;
+  user-select: none;
+  transition: all 0.3s cubic-bezier(0.23, 1, 0.32, 1);
 }
 
-.voice-toggle-label:hover {
+.alert-toggle-label:hover {
   color: var(--text-primary);
-  background: var(--bg-hover);
-  border-color: var(--border-luxury);
 }
 
-.voice-toggle-label input[type="checkbox"] {
-  width: 18px;
-  height: 18px;
-  accent-color: var(--accent-primary);
-  background: var(--bg-window);
+.alert-toggle-label input[type="checkbox"] {
+  appearance: none;
+  width: 14px;
+  height: 14px;
   border: 2px solid var(--border-primary);
-  border-radius: var(--radius-sharp);
+  border-radius: 2px;
+  background: var(--bg-window);
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.23, 1, 0.32, 1);
+  position: relative;
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.2);
 }
 
-.voice-toggle-text {
-  font-size: 11px;
-  font-weight: var(--font-weight-semibold);
-  letter-spacing: 0.8px;
-}
-
-.voice-toggle-label:has(input:checked) .voice-toggle-text {
-  color: var(--accent-primary);
-}
-
-.voice-status {
-  font-size: 9px;
-  font-weight: var(--font-weight-bold);
-  padding: 6px 12px;
-  border-radius: var(--radius-sharp);
-  margin-left: 12px;
-  text-transform: uppercase;
-  letter-spacing: 1px;
-  transition: all 0.3s ease;
-  border: 1px solid var(--border-primary);
-}
-
-.voice-status.on {
-  color: #000000;
+.alert-toggle-label input[type="checkbox"]:checked {
   background: linear-gradient(135deg, var(--accent-primary) 0%, var(--accent-secondary) 100%);
   border-color: var(--accent-luxury);
-  box-shadow: 0 0 16px rgba(201, 170, 150, 0.3);
+  box-shadow:
+    inset 0 2px 4px rgba(0, 0, 0, 0.2),
+    0 0 8px rgba(201, 170, 150, 0.3);
 }
 
-.voice-status.off {
+.alert-toggle-label input[type="checkbox"]:checked::after {
+  content: '✓';
+  position: absolute;
+  top: -3px;
+  left: 0px;
+  color: #000000;
+  font-size: 10px;
+  font-weight: var(--font-weight-heavy);
+}
+
+.alert-toggle-text {
+  font-family: var(--font-mono);
+  font-weight: var(--font-weight-semibold);
+  min-width: 42px;
+}
+
+.alert-status {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-primary);
+  border-radius: 2px;
+  padding: 2px 6px;
+  font-family: var(--font-mono);
+  font-size: 8px;
+  font-weight: var(--font-weight-bold);
+  letter-spacing: 0.8px;
+  transition: all 0.3s cubic-bezier(0.23, 1, 0.32, 1);
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+.alert-status.on {
+  background: linear-gradient(135deg, var(--accent-success) 0%, #28a745 100%);
+  color: #000000;
+  border-color: var(--accent-success);
+  box-shadow:
+    inset 0 1px 3px rgba(0, 0, 0, 0.3),
+    0 0 8px rgba(127, 176, 105, 0.3);
+}
+
+.alert-status.off {
+  background: var(--bg-secondary);
   color: var(--text-muted);
-  background: var(--bg-window);
-  border-color: var(--border-primary);
+  border-color: var(--border-secondary);
+}
+
+/* Sound Controls */
+.sound-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border-secondary);
+}
+
+.sound-select {
+  background: linear-gradient(135deg, var(--bg-window) 0%, var(--bg-card) 100%);
+  border: 2px solid var(--border-primary);
+  color: var(--text-primary);
+  padding: 6px 8px;
+  font-family: var(--font-primary);
+  font-size: 10px;
+  font-weight: var(--font-weight-medium);
+  border-radius: var(--radius-sharp);
+  transition: all 0.3s cubic-bezier(0.23, 1, 0.32, 1);
+  box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.3);
+  flex: 1;
+}
+
+.sound-select:focus {
+  outline: none;
+  border-color: var(--accent-luxury);
+  box-shadow:
+    inset 0 2px 8px rgba(0, 0, 0, 0.3),
+    0 0 16px rgba(201, 170, 150, 0.2);
+}
+
+.sound-preview-btn {
+  background: linear-gradient(135deg, var(--accent-primary) 0%, var(--accent-secondary) 100%);
+  color: #000000;
+  border: 2px solid var(--accent-luxury);
+  border-radius: var(--radius-sharp);
+  padding: 6px 8px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.23, 1, 0.32, 1);
+  box-shadow: var(--shadow-subtle);
+  min-width: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.sound-preview-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-luxury);
 }
 
 /* G-Class Triple Monitor Layout - Optimized for 3 Patterns */
@@ -298,22 +381,28 @@ body {
   z-index: -1;
 }
 
-/* Unified Layout */
-.unified-layout {
+/* G-Class Layout System - Cohesive Design */
+.unified-layout,
+.historical-layout,
+.backtest-layout {
   flex: 1;
   height: calc(100vh - 60px);
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  background: var(--bg-primary);
 }
 
-/* Historical Layout */
-.historical-layout {
-  flex: 1;
-  height: calc(100vh - 60px);
-  overflow: hidden;
-  padding: 20px;
-  background: var(--bg-primary);
+/* Unified Feed - Full height container */
+.unified-layout {
+  padding: 0;
+}
+
+/* Historical and Backtest - Padded containers */
+.historical-layout,
+.backtest-layout {
+  padding: 0;
+  background: linear-gradient(135deg, var(--bg-primary) 0%, var(--bg-secondary) 100%);
 }
 
 /* Technical Focus States */

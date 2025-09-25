@@ -62,8 +62,6 @@ export interface ScannerConfig {
       minBarVolume: number; // 5000
     };
 
-
-
     // Green candle run patterns
     greenRun: {
       // Minimum consecutive green candles before red
@@ -135,11 +133,11 @@ export const defaultScannerConfig: ScannerConfig = {
   },
 
   gapCriteria: {
-    minGapPercentage: 5.0,
+    minGapPercentage: 20.0,
     maxGapPercentage: 10000.0,
     minPrice: 1.0,
     maxPrice: 20.0,
-    minCumulativeVolume: 500000,
+    minCumulativeVolume: 1000000,
     minAvgVolume: 100,
   },
 
@@ -156,8 +154,6 @@ export const defaultScannerConfig: ScannerConfig = {
       mustCloseRed: false,
       minBarVolume: 1000, // Lower requirement - rely on cumulative volume filtering
     },
-
-
 
     greenRun: {
       minConsecutiveGreen: 4,

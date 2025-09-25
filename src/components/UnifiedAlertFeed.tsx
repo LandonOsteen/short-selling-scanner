@@ -1,10 +1,13 @@
 import React, { useEffect, useRef, memo, useMemo, useState, useCallback } from 'react';
 import './UnifiedAlertFeed.css';
 import { Alert, PatternType } from '../types';
+import { soundService } from '../services/SoundService';
 
 interface UnifiedAlertFeedProps {
   alerts: Alert[];
   voiceAlertsEnabled: boolean;
+  soundAlertsEnabled: boolean;
+  selectedSound: string;
   isConnected?: boolean;
   stats?: {
     totalAlerts: number;
@@ -24,35 +27,62 @@ const PATTERN_CONFIGS: Record<PatternType, { title: string; color: string; prior
 const UnifiedAlertFeed: React.FC<UnifiedAlertFeedProps> = ({
   alerts,
   voiceAlertsEnabled,
+  soundAlertsEnabled,
+  selectedSound,
   isConnected = false,
   stats,
   symbols = []
 }) => {
+  const [showFilters, setShowFilters] = useState(false);
   const prevAlertsLength = useRef(alerts.length);
 
   // Filter state
   const [symbolFilter, setSymbolFilter] = useState('');
   const [patternFilter, setPatternFilter] = useState<PatternType | 'all'>('all');
   const [timeFilter, setTimeFilter] = useState<'all' | '1h' | '30m' | '10m' | '5m'>('all');
-  const [showFilters, setShowFilters] = useState(false);
 
-  // Voice alert for new incoming signals
+  // Sound and voice alerts for new incoming signals - optimized for immediate response
   useEffect(() => {
-    if (voiceAlertsEnabled && alerts.length > prevAlertsLength.current && alerts.length > 0) {
-      const latestAlert = alerts[alerts.length - 1];
-      const config = PATTERN_CONFIGS[latestAlert.type];
+    if (alerts.length > prevAlertsLength.current && alerts.length > 0) {
+      const newAlerts = alerts.slice(prevAlertsLength.current);
 
-      // Play voice alert
-      if ('speechSynthesis' in window) {
-        const utterance = new SpeechSynthesisUtterance(`New ${config.title} signal for ${latestAlert.symbol}`);
-        utterance.rate = 1.2;
-        utterance.pitch = 1.0;
-        utterance.volume = 0.8;
-        window.speechSynthesis.speak(utterance);
-      }
+      // Process each new alert immediately
+      newAlerts.forEach(async (newAlert) => {
+        const config = PATTERN_CONFIGS[newAlert.type];
+
+        // Play sound alert immediately if enabled
+        if (soundAlertsEnabled && selectedSound !== 'none') {
+          try {
+            await soundService.playSound(selectedSound);
+          } catch (error) {
+            console.warn('Sound alert failed:', error);
+          }
+        }
+
+        // Play voice alert if enabled
+        if (voiceAlertsEnabled && 'speechSynthesis' in window) {
+          const utterance = new SpeechSynthesisUtterance(`New ${config.title} signal for ${newAlert.symbol}`);
+          utterance.rate = 1.2;
+          utterance.pitch = 1.0;
+          utterance.volume = 0.8;
+          window.speechSynthesis.speak(utterance);
+        }
+
+        // Browser notification (if permission granted)
+        if ('Notification' in window && Notification.permission === 'granted') {
+          new Notification(`Short Selling Scanner - ${config.title}`, {
+            body: `${newAlert.symbol}: ${newAlert.detail}`,
+            icon: '/icon.png',
+            badge: '/icon.png',
+            tag: `alert-${newAlert.symbol}`,
+            requireInteraction: false,
+            silent: false
+          });
+        }
+      });
     }
     prevAlertsLength.current = alerts.length;
-  }, [alerts.length, voiceAlertsEnabled, alerts]);
+  }, [alerts, voiceAlertsEnabled, soundAlertsEnabled, selectedSound]);
 
   // Filter and sort alerts - memoized for performance
   const filteredAndSortedAlerts = useMemo(() => {
@@ -60,7 +90,6 @@ const UnifiedAlertFeed: React.FC<UnifiedAlertFeedProps> = ({
 
     // Apply filters
     let filtered = alerts.filter(alert => {
-      const config = PATTERN_CONFIGS[alert.type];
 
       // Symbol filter
       if (symbolFilter && !alert.symbol.toLowerCase().includes(symbolFilter.toLowerCase())) {
@@ -103,11 +132,11 @@ const UnifiedAlertFeed: React.FC<UnifiedAlertFeedProps> = ({
     });
   }, [alerts, symbolFilter, patternFilter, timeFilter]);
 
-  // Get unique symbols for dropdown (commented out for now as it's not used)
-  // const uniqueSymbols = useMemo(() => {
-  //   const symbols = new Set(alerts.map(alert => alert.symbol));
-  //   return Array.from(symbols).sort();
-  // }, [alerts]);
+  const requestNotificationPermission = useCallback(async () => {
+    if ('Notification' in window && Notification.permission === 'default') {
+      await Notification.requestPermission();
+    }
+  }, []);
 
   // Clear filters handler
   const clearFilters = useCallback(() => {
@@ -150,6 +179,15 @@ const UnifiedAlertFeed: React.FC<UnifiedAlertFeedProps> = ({
           >
             <span>FILTERS</span>
           </button>
+          {Notification.permission === 'default' && (
+            <button
+              className="filter-toggle"
+              onClick={requestNotificationPermission}
+              title="Enable Browser Notifications"
+            >
+              <span>🔔 NOTIFICATIONS</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -209,6 +247,7 @@ const UnifiedAlertFeed: React.FC<UnifiedAlertFeedProps> = ({
           </div>
         </div>
       )}
+
 
       <div className="alert-feed-container">
         {filteredAndSortedAlerts.length === 0 ? (

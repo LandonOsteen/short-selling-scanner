@@ -4,6 +4,7 @@ import ScannerWindow from './components/ScannerWindow';
 import StatusBar from './components/StatusBar';
 import UnifiedAlertFeed from './components/UnifiedAlertFeed';
 import HistoricalTesting from './components/HistoricalTesting';
+import Backtesting from './components/Backtesting';
 import { PatternType, Alert } from './types';
 import { GapScanner } from './services/GapScanner';
 
@@ -29,8 +30,21 @@ function App() {
     symbolsTracked: 0,
     lastUpdate: new Date().toLocaleTimeString()
   });
-  const [layoutMode, setLayoutMode] = useState<'grid' | 'unified' | 'historical'>('grid');
+  const [layoutMode, setLayoutMode] = useState<'grid' | 'unified' | 'historical' | 'backtest'>('grid');
   const [voiceAlertsEnabled, setVoiceAlertsEnabled] = useState(false);
+  const [soundAlertsEnabled, setSoundAlertsEnabled] = useState(false);
+  const [selectedSound, setSelectedSound] = useState('alert');
+
+  // Enable/disable sound service when sound alerts toggle
+  useEffect(() => {
+    const enableSoundService = async () => {
+      if (soundAlertsEnabled) {
+        const { soundService } = await import('./services/SoundService');
+        await soundService.enableAudio();
+      }
+    };
+    enableSoundService();
+  }, [soundAlertsEnabled]);
 
   // Real gap stock scanner with 6:00 AM - 9:30 AM ET timeframe
   useEffect(() => {
@@ -151,13 +165,10 @@ function App() {
   }, [alerts]);
 
   // Memoize event handlers to prevent child re-renders
-  const handleLayoutModeChange = useCallback((mode: 'grid' | 'unified' | 'historical') => {
+  const handleLayoutModeChange = useCallback((mode: 'grid' | 'unified' | 'historical' | 'backtest') => {
     setLayoutMode(mode);
   }, []);
 
-  const handleVoiceAlertsChange = useCallback((enabled: boolean) => {
-    setVoiceAlertsEnabled(enabled);
-  }, []);
 
   // Keyboard navigation support
   useEffect(() => {
@@ -175,6 +186,10 @@ function App() {
           case '3':
             e.preventDefault();
             handleLayoutModeChange('historical');
+            break;
+          case '4':
+            e.preventDefault();
+            handleLayoutModeChange('backtest');
             break;
           case 'v':
             e.preventDefault();
@@ -226,27 +241,79 @@ function App() {
           >
             <span>HISTORICAL TEST</span>
           </button>
+          <button
+            className={`toggle-btn ${layoutMode === 'backtest' ? 'active' : ''}`}
+            onClick={() => handleLayoutModeChange('backtest')}
+            role="tab"
+            aria-selected={layoutMode === 'backtest'}
+            aria-controls="main-content"
+            title="Switch to backtesting (Ctrl+4)"
+          >
+            <span>BACKTEST</span>
+          </button>
         </div>
 
-        <div className="voice-toggle">
-          <label className="voice-toggle-label" title="Toggle voice alerts (Ctrl+V)">
-            <input
-              type="checkbox"
-              checked={voiceAlertsEnabled}
-              onChange={(e) => handleVoiceAlertsChange(e.target.checked)}
-              aria-describedby="voice-status"
-            />
-            <span className="voice-toggle-text">
-              VOICE ALERTS
-            </span>
-            <span
-              id="voice-status"
-              className={`voice-status ${voiceAlertsEnabled ? 'on' : 'off'}`}
-              aria-live="polite"
-            >
-              {voiceAlertsEnabled ? 'ON' : 'OFF'}
-            </span>
-          </label>
+        <div className="alerts-control-panel">
+          <div className="alerts-toggles">
+            <div className="alert-toggle-group">
+              <label className="alert-toggle-label" title="Toggle voice alerts (Ctrl+V)">
+                <input
+                  type="checkbox"
+                  checked={voiceAlertsEnabled}
+                  onChange={(e) => setVoiceAlertsEnabled(e.target.checked)}
+                />
+                <span className="alert-toggle-text">VOICE</span>
+                <span className={`alert-status ${voiceAlertsEnabled ? 'on' : 'off'}`}>
+                  {voiceAlertsEnabled ? 'ON' : 'OFF'}
+                </span>
+              </label>
+            </div>
+
+            <div className="alert-toggle-group">
+              <label className="alert-toggle-label" title="Toggle sound alerts">
+                <input
+                  type="checkbox"
+                  checked={soundAlertsEnabled}
+                  onChange={(e) => setSoundAlertsEnabled(e.target.checked)}
+                />
+                <span className="alert-toggle-text">SOUND</span>
+                <span className={`alert-status ${soundAlertsEnabled ? 'on' : 'off'}`}>
+                  {soundAlertsEnabled ? 'ON' : 'OFF'}
+                </span>
+              </label>
+            </div>
+          </div>
+
+          {soundAlertsEnabled && (
+            <div className="sound-controls">
+              <select
+                value={selectedSound}
+                onChange={(e) => setSelectedSound(e.target.value)}
+                className="sound-select"
+                title="Select alert sound"
+              >
+                <option value="beep">Classic Beep</option>
+                <option value="chime">Gentle Chime</option>
+                <option value="alert">Alert Tone</option>
+                <option value="urgent">Urgent Alert</option>
+                <option value="trading-bell">Trading Bell</option>
+                <option value="success">Success Tone</option>
+                <option value="warning">Warning Sound</option>
+              </select>
+              <button
+                className="sound-preview-btn"
+                onClick={() => {
+                  // Import and use sound service for preview
+                  import('./services/SoundService').then(({ soundService }) => {
+                    soundService.previewSound(selectedSound);
+                  });
+                }}
+                title="Preview selected sound"
+              >
+                🎵
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
@@ -274,21 +341,29 @@ function App() {
           <UnifiedAlertFeed
             alerts={alerts}
             voiceAlertsEnabled={voiceAlertsEnabled}
+            soundAlertsEnabled={soundAlertsEnabled}
+            selectedSound={selectedSound}
             isConnected={isConnected}
             stats={stats}
             symbols={symbols}
           />
         </div>
-      ) : (
+      ) : layoutMode === 'historical' ? (
         <div className="historical-layout">
           <HistoricalTesting
+            gapScanner={gapScanner}
+          />
+        </div>
+      ) : (
+        <div className="backtest-layout">
+          <Backtesting
             gapScanner={gapScanner}
           />
         </div>
         )}
       </main>
 
-      {layoutMode !== 'unified' && (
+      {layoutMode !== 'unified' && layoutMode !== 'backtest' && (
         <StatusBar
           isConnected={isConnected}
           stats={stats}

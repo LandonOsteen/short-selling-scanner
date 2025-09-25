@@ -972,6 +972,36 @@ export class GapScanner {
     return patterns[Math.floor(Math.random() * patterns.length)];
   }
 
+  // Get market open price for a specific symbol and date
+  async getMarketOpenPrice(symbol: string, dateString: string): Promise<number> {
+    if (!this.polygonApiKey) {
+      throw new Error('Polygon API key required for market open price');
+    }
+
+    try {
+      // Get daily OHLC data for the specific date
+      const url = `https://api.polygon.io/v1/open-close/${symbol}/${dateString}?adjusted=true&apikey=${this.polygonApiKey}`;
+
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      const data = await response.json();
+
+      if (data.status !== 'OK' || typeof data.open !== 'number') {
+        throw new Error(`No open price data available for ${symbol} on ${dateString}`);
+      }
+
+      console.log(`📈 ${symbol} open price on ${dateString}: $${data.open.toFixed(2)}`);
+      return data.open;
+
+    } catch (error) {
+      console.error(`Failed to get open price for ${symbol} on ${dateString}:`, error);
+      throw error;
+    }
+  }
+
   // Get historical 1-minute bars from Polygon API
   private async getHistoricalBars(symbol: string, startTime: Date, endTime: Date): Promise<PolygonBar[]> {
     const startDate = startTime.toISOString().split('T')[0]; // YYYY-MM-DD
@@ -1125,26 +1155,53 @@ export class GapScanner {
 
 
   private detectGreenThenRed(symbol: string, bars: PolygonBar[], index: number, timestamp: Date, hod: number, cumulativeVolume?: number, gapPercent?: number): Alert | null {
-    if (index < 4) return null;
+    const minConsecutiveGreen = this.config.patterns.greenRun.minConsecutiveGreen;
+    const maxConsecutiveGreen = this.config.patterns.greenRun.maxConsecutiveGreen;
+
+    if (index < minConsecutiveGreen) return null;
 
     const currentBar = bars[index];
-    const prevBars = bars.slice(index - 4, index);
 
-    // Check if last 4 bars were green and current is red
-    const allGreen = prevBars.every(bar => bar.c > bar.o);
+    // Look for consecutive green bars up to the maximum allowed
+    let consecutiveGreen = 0;
+    for (let i = Math.min(maxConsecutiveGreen, index); i > 0; i--) {
+      const checkIndex = index - i;
+      if (checkIndex >= 0 && bars[checkIndex].c > bars[checkIndex].o) {
+        consecutiveGreen++;
+      } else {
+        break;
+      }
+    }
+
+    const prevBars = bars.slice(Math.max(0, index - consecutiveGreen), index);
+
+    // Check if we have enough consecutive green bars and current is red
+    const hasMinGreenRun = consecutiveGreen >= minConsecutiveGreen;
+    const allPrevGreen = prevBars.every(bar => bar.c > bar.o);
     const currentRed = currentBar.c < currentBar.o;
 
-    // Only trigger near HOD (within 5% of HOD)
+    // Calculate total gain during green run to meet minimum threshold
+    if (hasMinGreenRun && prevBars.length > 0) {
+      const runStartPrice = prevBars[0].o;
+      const runEndPrice = prevBars[prevBars.length - 1].c;
+      const runGainPercent = ((runEndPrice - runStartPrice) / runStartPrice) * 100;
+
+      if (runGainPercent < this.config.patterns.greenRun.minRunGainPercent) {
+        return null; // Run gain too small
+      }
+    }
+
+    // Only trigger near HOD
     const hodDistanceThreshold = 1 - (this.config.patterns.hod.nearHodDistancePercent / 100);
     const nearHOD = currentBar.h >= hod * hodDistanceThreshold;
 
-    if (allGreen && currentRed && nearHOD) {
+    if (hasMinGreenRun && allPrevGreen && currentRed && nearHOD) {
       return {
         id: `${symbol}-${timestamp.getTime()}-Run4PlusGreenThenRed`,
         timestamp: timestamp.getTime(),
         symbol,
         type: 'Run4PlusGreenThenRed',
-        detail: `4 green candles then red near HOD ${hod.toFixed(2)}`,
+        detail: `${consecutiveGreen} green candles then red near HOD ${hod.toFixed(2)}`,
         price: currentBar.c,
         volume: cumulativeVolume || currentBar.v, // Use cumulative volume if available
         gapPercent: gapPercent,
