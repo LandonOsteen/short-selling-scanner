@@ -302,6 +302,8 @@
   align-items: flex-start;
   margin-bottom: 8px;
   gap: 16px;
+  padding-left: 0;
+  margin-left: 0;
 }
 
 .alert-symbol-and-pattern {
@@ -309,6 +311,8 @@
   flex-direction: column;
   gap: 4px;
   flex: 1;
+  padding-left: 0;
+  margin-left: 0;
 }
 
 .alert-symbol {
@@ -374,6 +378,8 @@
   align-items: flex-start;
   gap: 16px;
   margin-top: 4px;
+  margin-left: 0;
+  padding-left: 0;
 }
 
 .alert-description {
@@ -384,6 +390,7 @@
   font-weight: 400;
   margin: 0;
   padding: 0;
+  text-align: left;
 }
 
 .alert-time-container {
