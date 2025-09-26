@@ -63,6 +63,7 @@ export class GapScanner {
   private scanInterval: number | null = null;
   private alertCallbacks: ((alert: Alert) => void)[] = [];
   private firedAlertIds: Set<string> = new Set();
+  private lastBackfillTime: number = 0;
   private config: ScannerConfig;
 
   // Pattern state tracking to persist across scans - CRITICAL FIX
@@ -595,43 +596,107 @@ export class GapScanner {
     }
   }
 
-  // Start continuous scanning
+  // Start continuous backfill-based scanning
   startScanning(): void {
     if (this.isScanning) return;
 
     this.isScanning = true;
-    console.log('Starting gap stock scanner...');
+    console.log('Starting continuous backfill-based signal detection every 30 seconds on :00 and :30...');
 
-    // Initial scan
+    // Initial scan for gap stocks
     this.scanForGappers();
 
-    // Enhanced scanning at configured intervals during market hours (supports extended hours)
-    this.scanInterval = window.setInterval(async () => {
-      try {
-        const now = this.getCurrentTime();
-        const etHour = this.getETHour(now);
-        const isPremarket = etHour >= 4 && etHour < 9.5;
-        const isRegularHours = etHour >= 9.5 && etHour < 16;
+    // Schedule first backfill at next :00 or :30 second mark
+    this.scheduleNextBackfill();
+  }
 
-        // Always scan for gap stocks first
+  // Schedule backfill to run on :00 and :30 second marks
+  private scheduleNextBackfill(): void {
+    const now = new Date();
+    const currentSeconds = now.getSeconds();
+
+    // Calculate milliseconds until next :00 or :30 second mark
+    let secondsUntilNext: number;
+    if (currentSeconds < 30) {
+      secondsUntilNext = 30 - currentSeconds;
+    } else {
+      secondsUntilNext = 60 - currentSeconds;
+    }
+
+    const msUntilNext = (secondsUntilNext * 1000) - now.getMilliseconds();
+
+    if (this.config.development.enableDebugLogging) {
+      console.log(`📅 Next backfill scheduled in ${(msUntilNext/1000).toFixed(1)} seconds`);
+    }
+
+    // Schedule the next backfill
+    setTimeout(() => {
+      this.performScheduledBackfill();
+
+      // Set up regular interval for every 30 seconds
+      this.scanInterval = window.setInterval(() => {
+        this.performScheduledBackfill();
+      }, this.config.scanning.backfillInterval);
+
+    }, msUntilNext);
+  }
+
+  // Perform backfill on schedule
+  private async performScheduledBackfill(): Promise<void> {
+    try {
+      const now = this.getCurrentTime();
+
+      // Only scan during configured market hours
+      if (this.isWithinMarketHours(now)) {
+        if (this.config.development.enableDebugLogging) {
+          console.log(`🔄 Running scheduled backfill at ${this.formatETTime(now)} (:${now.getSeconds().toString().padStart(2, '0')})`);
+        }
+
+        // Update gap stocks first
         await this.scanForGappers();
 
-        // Enhanced live pattern scanning with session awareness
-        if (this.isWithinMarketHours(now)) {
-          const sessionType = isPremarket ? 'premarket' : isRegularHours ? 'regular' : 'extended';
-
-          if (this.config.development.enableDebugLogging) {
-            console.log(`🔍 Scanning for live patterns at ${this.formatETTime(now)} (${sessionType} session)`);
-          }
-
-          await this.scanForLivePatterns();
-        } else if (this.config.development.enableDebugLogging) {
-          console.log(`🕐 Outside configured market hours at ${this.formatETTime(now)} (${this.config.marketHours.startTime}-${this.config.marketHours.endTime}) - skipping live pattern scan`);
+        // Perform backfill to get latest signals
+        await this.performContinuousBackfill();
+      } else {
+        if (this.config.development.enableDebugLogging) {
+          console.log(`🕐 Outside market hours at ${this.formatETTime(now)} - skipping backfill scan`);
         }
-      } catch (error) {
-        console.error('Error in enhanced scanning interval:', error);
       }
-    }, this.config.scanning.scanInterval);
+    } catch (error) {
+      console.error('Error in scheduled backfill:', error);
+    }
+  }
+
+  // Perform continuous backfill and fire new alerts with sound notifications
+  private async performContinuousBackfill(): Promise<void> {
+    try {
+      const now = Date.now();
+
+      // Get the latest signals from backfill
+      const backfilledAlerts = await this.backfillMissedData();
+
+      // Find new alerts since last backfill
+      const newAlerts = backfilledAlerts.filter(alert =>
+        alert.timestamp > this.lastBackfillTime
+      );
+
+      if (newAlerts.length > 0) {
+        console.log(`🔔 Found ${newAlerts.length} new signals from continuous backfill`);
+
+        // Fire each new alert through the callback system (triggers sound)
+        newAlerts.forEach(alert => {
+          this.fireAlert(alert);
+        });
+      } else if (this.config.development.enableDebugLogging) {
+        console.log(`✅ Continuous backfill complete - no new signals since ${new Date(this.lastBackfillTime).toLocaleTimeString()}`);
+      }
+
+      // Update last backfill time
+      this.lastBackfillTime = now;
+
+    } catch (error) {
+      console.error('Error in continuous backfill:', error);
+    }
   }
 
   // Stop scanning
@@ -697,76 +762,6 @@ export class GapScanner {
   }
 
   // Scan for live patterns during premarket hours
-  private async scanForLivePatterns(): Promise<void> {
-    try {
-      console.log('Scanning for live patterns...');
-
-      // Get current gap stocks being tracked
-      const currentGapStocks = Array.from(this.gapStocks.values());
-
-      if (currentGapStocks.length === 0) {
-        console.log('No gap stocks to scan for patterns');
-        return;
-      }
-
-      // Scan each gap stock for patterns
-      for (const gapStock of currentGapStocks) {
-        try {
-          const alerts = await this.scanStockForLivePatterns(gapStock);
-          alerts.forEach(alert => this.fireAlert(alert));
-        } catch (error) {
-          console.warn(`Failed to scan ${gapStock.symbol} for live patterns:`, error);
-        }
-      }
-
-    } catch (error) {
-      console.error('Error scanning for live patterns:', error);
-    }
-  }
-
-  // Scan a specific stock for live patterns
-  private async scanStockForLivePatterns(gapStock: GapStock): Promise<Alert[]> {
-    const now = Date.now();
-    const alerts: Alert[] = [];
-
-    try {
-      // CRITICAL FIX: Get bars from market start (4:00 AM) to initialize pattern state properly
-      const endTime = new Date(now);
-      const marketStart = this.getMarketStartTime();
-      const startTime = marketStart;
-
-      console.log(`Scanning ${gapStock.symbol} patterns from ${this.formatETTime(startTime)} to ${this.formatETTime(endTime)}`);
-      const bars = await this.getHistoricalBars(gapStock.symbol, startTime, endTime);
-
-      if (bars.length > 0) {
-        // CRITICAL FIX: Initialize pattern state from all premarket bars
-        this.initializePatternState(gapStock.symbol, bars);
-
-        // Only detect patterns in recent bars, but state is initialized from all bars
-        const recentBars = bars.slice(-this.config.scanning.recentBarsForPatterns); // Recent bars for pattern detection
-        const detectedAlerts = await this.detectPatternsInBars(gapStock.symbol, recentBars, gapStock.ema200, gapStock.cumulativeVolume, gapStock.gapPercent);
-
-        // All detected alerts are valid - deduplication happens in fireAlert()
-        alerts.push(...detectedAlerts);
-
-        if (detectedAlerts.length > 0) {
-          console.log(`🔔 ALERT: ${detectedAlerts.length} new patterns for ${gapStock.symbol}`);
-          console.log(`   📊 VOLUME CHECK: Cumulative=${(gapStock.cumulativeVolume / 1000).toFixed(0)}k, Required=${this.config.gapCriteria.minCumulativeVolume / 1000}k, Gap=${gapStock.gapPercent.toFixed(1)}%`);
-          if (gapStock.cumulativeVolume < this.config.gapCriteria.minCumulativeVolume) {
-            console.error(`🚨 CRITICAL: ${gapStock.symbol} VOLUME VIOLATION - ${(gapStock.cumulativeVolume/1000).toFixed(0)}k < ${this.config.gapCriteria.minCumulativeVolume/1000}k required!`);
-          }
-          detectedAlerts.forEach(alert => {
-            console.log(`   - ${alert.type}: ${alert.detail}`);
-          });
-        }
-      }
-
-    } catch (error) {
-      console.warn(`Error scanning ${gapStock.symbol} for patterns:`, error);
-    }
-
-    return alerts;
-  }
 
   // Get historical alerts for a specific date
   async getHistoricalAlertsForDate(dateString: string): Promise<Alert[]> {
@@ -1256,53 +1251,6 @@ export class GapScanner {
     }
   }
 
-  // Detect patterns in historical bars
-  private async detectPatternsInBars(symbol: string, bars: PolygonBar[], ema200?: number, cumulativeVolume?: number, gapPercent?: number): Promise<Alert[]> {
-    const alerts: Alert[] = [];
-
-    if (bars.length < 5) {
-      return alerts; // Need at least 5 bars for pattern detection
-    }
-
-    // CRITICAL SAFETY CHECK: Ensure cumulative volume meets requirements
-    if (cumulativeVolume !== undefined) {
-      if (cumulativeVolume < this.config.gapCriteria.minCumulativeVolume) {
-        console.error(`🚨 VOLUME SAFETY FILTER TRIGGERED: ${symbol} has ${(cumulativeVolume/1000).toFixed(0)}k cumulative volume < ${this.config.gapCriteria.minCumulativeVolume/1000}k required - BLOCKING ALL PATTERNS`);
-        return alerts; // Block all pattern detection for this stock
-      } else {
-        console.log(`✅ ${symbol} VOLUME OK: ${(cumulativeVolume/1000).toFixed(0)}k cumulative volume ≥ ${this.config.gapCriteria.minCumulativeVolume/1000}k required`);
-      }
-    } else {
-      console.warn(`⚠️ ${symbol} NO CUMULATIVE VOLUME PROVIDED - this may indicate a filtering bypass!`);
-    }
-
-    // CRITICAL FIX: Use stored pattern state HOD instead of recalculating from limited bars
-    const patternState = this.patternStates.get(symbol);
-    const hod = patternState?.hod || Math.max(...bars.map(bar => bar.h));
-
-    for (let i = 4; i < bars.length; i++) {
-      const currentBar = bars[i];
-      const barTime = new Date(currentBar.t);
-
-      // 1. Topping Tail 1m - ≥50% upper wick and red close
-      const toppingTailAlert = this.detectToppingTail(symbol, currentBar, barTime, hod, cumulativeVolume, gapPercent);
-      if (toppingTailAlert) alerts.push(toppingTailAlert);
-
-      // 2. HOD Break Close Under
-      const hodBreakAlert = this.detectHODBreakCloseUnder(symbol, bars, i, hod, barTime, cumulativeVolume, gapPercent);
-      if (hodBreakAlert) alerts.push(hodBreakAlert);
-
-
-      // 4. 4+ Green Then Red - only near HOD
-      const greenThenRedAlert = this.detectGreenThenRed(symbol, bars, i, barTime, hod, cumulativeVolume, gapPercent);
-      if (greenThenRedAlert) alerts.push(greenThenRedAlert);
-
-
-
-    }
-
-    return alerts;
-  }
 
   // Pattern detection methods
   private detectToppingTail(symbol: string, bar: PolygonBar, timestamp: Date, hod: number, cumulativeVolume?: number, gapPercent?: number): Alert | null {

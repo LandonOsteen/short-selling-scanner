@@ -12,10 +12,10 @@ const ScannerWindow: React.FC<ScannerWindowProps> = ({
   const windowRef = useRef<HTMLDivElement>(null);
   const alertsRef = useRef<HTMLDivElement>(null);
 
-  // Auto-scroll to newest alerts
+  // Keep newest alerts at top (no auto-scroll to bottom)
   useEffect(() => {
     if (alertsRef.current) {
-      alertsRef.current.scrollTop = alertsRef.current.scrollHeight;
+      alertsRef.current.scrollTop = 0;
     }
   }, [alerts]);
 

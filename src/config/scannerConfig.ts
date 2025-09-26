@@ -86,11 +86,8 @@ export interface ScannerConfig {
 
   // Scanning Behavior
   scanning: {
-    // How often to scan for new opportunities (in milliseconds)
-    scanInterval: number; // 30000 = 30 seconds
-
-    // Number of recent bars to analyze for patterns
-    recentBarsForPatterns: number; // 10
+    // How often to backfill for new signals (in milliseconds)
+    backfillInterval: number; // 30000 = 30 seconds (on :00 and :30)
 
     // Bid/ask spread for symbol data display
     bidAskSpread: number; // 0.01
@@ -167,8 +164,7 @@ export const defaultScannerConfig: ScannerConfig = {
   },
 
   scanning: {
-    scanInterval: 30000,
-    recentBarsForPatterns: 10,
+    backfillInterval: 30000,
     bidAskSpread: 0.01,
   },
 
@@ -344,7 +340,7 @@ export const exampleConfigs = {
     gapCriteria: {
       ...defaultScannerConfig.gapCriteria,
       minGapPercentage: 20.0,
-      minCumulativeVolume: 500000,
+      minCumulativeVolume: 1000000,
     },
     api: {
       ...defaultScannerConfig.api,
