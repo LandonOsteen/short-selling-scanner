@@ -1103,8 +1103,9 @@ export class GapScanner {
     const mustCloseRed = this.config.patterns.toppingTail.mustCloseRed;
 
     // Strict HOD check - must be within configured distance from HOD
-    const hodDistanceThreshold = 1 - (this.config.patterns.hod.nearHodDistancePercent / 100);
-    const nearHOD = bar.h >= hod * hodDistanceThreshold;
+    // Use maxHodDistancePercent for topping tail since the high touches HOD but close should still be reasonably near
+    const maxDistanceThreshold = 1 - (this.config.patterns.hod.maxHodDistancePercent / 100);
+    const nearHOD = bar.c >= hod * maxDistanceThreshold; // Check close price, not high
 
     // Check all topping tail conditions using configuration
     const validWick = wickPercent >= minWickPercent;
@@ -1135,8 +1136,15 @@ export class GapScanner {
     const currentBar = bars[index];
     const prevBar = bars[index - 1];
 
-    // Check if previous bar broke HOD and current bar closed under (more lenient thresholds)
-    if (prevBar.h >= hod * 0.995 && currentBar.c < hod * 0.99) {
+    // Use configuration-based thresholds instead of hardcoded values
+    const nearHodThreshold = 1 - (this.config.patterns.hod.nearHodDistancePercent / 100);
+    const maxHodThreshold = 1 - (this.config.patterns.hod.maxHodDistancePercent / 100);
+
+    // Check if previous bar broke HOD (within near threshold) and current bar closed under (within max threshold)
+    const prevBarNearHod = prevBar.h >= hod * nearHodThreshold;
+    const currentBarWithinMaxDistance = currentBar.c >= hod * maxHodThreshold;
+
+    if (prevBarNearHod && currentBar.c < prevBar.h && currentBarWithinMaxDistance) {
       return {
         id: `${symbol}-${timestamp.getTime()}-HODBreakCloseUnder`,
         timestamp: timestamp.getTime(),

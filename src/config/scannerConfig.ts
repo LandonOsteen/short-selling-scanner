@@ -133,10 +133,10 @@ export const defaultScannerConfig: ScannerConfig = {
   },
 
   gapCriteria: {
-    minGapPercentage: 20.0,
+    minGapPercentage: 10.0,
     maxGapPercentage: 10000.0,
     minPrice: 1.0,
-    maxPrice: 20.0,
+    maxPrice: 50.0,
     minCumulativeVolume: 1000000,
     minAvgVolume: 100,
   },
