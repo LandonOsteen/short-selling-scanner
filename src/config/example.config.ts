@@ -37,7 +37,6 @@ export const createCustomScanner = () => {
       minPrice: 2.00,            // Higher minimum price
       maxPrice: 15.00,           // Lower maximum price
       minCumulativeVolume: 75000, // Lower volume requirement
-      minAvgVolume: 25000
     },
 
     // Much tighter HOD range
@@ -46,16 +45,13 @@ export const createCustomScanner = () => {
       hod: {
         nearHodDistancePercent: 0.2,  // Very tight: 0.2% from HOD
         maxHodDistancePercent: 0.8,   // Maximum 0.8% from HOD
-        minTimeAfterHod: 2            // At least 2 minutes after HOD
       }
     },
 
     // Enable debug logging
     development: {
       enableDebugLogging: true,
-      useMockData: false,
       overrideCurrentTime: null, // Can set to "2024-09-25T14:00:00.000Z" for testing
-      enablePerformanceMonitoring: true
     }
   };
 
@@ -78,7 +74,6 @@ export const demonstrateRuntimeUpdates = () => {
       hod: {
         nearHodDistancePercent: 0.1, // Super tight HOD range
         maxHodDistancePercent: 0.5,
-        minTimeAfterHod: 1
       }
     }
   });

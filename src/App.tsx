@@ -5,8 +5,10 @@ import StatusBar from './components/StatusBar';
 import UnifiedAlertFeed from './components/UnifiedAlertFeed';
 import HistoricalTesting from './components/HistoricalTesting';
 import Backtesting from './components/Backtesting';
+import GapSymbolsMonitor from './components/GapSymbolsMonitor';
 import { PatternType, Alert } from './types';
 import { GapScanner } from './services/GapScanner';
+import { getScannerConfig } from './config/scannerConfig';
 
 // Pattern configs for active scanners - G-Class styling
 const PATTERN_CONFIGS: Record<PatternType, { title: string; color: string; priority: number }> = {
@@ -24,13 +26,13 @@ function App() {
   const [symbols, setSymbols] = useState<string[]>([]);
   const [isConnected, setIsConnected] = useState(false);
   const [isInitializing, setIsInitializing] = useState(true);
-  const [gapScanner] = useState(() => new GapScanner());
+  const [gapScanner] = useState(() => new GapScanner(undefined, getScannerConfig()));
   const [stats, setStats] = useState({
     totalAlerts: 0,
     symbolsTracked: 0,
     lastUpdate: new Date().toLocaleTimeString()
   });
-  const [layoutMode, setLayoutMode] = useState<'grid' | 'unified' | 'historical' | 'backtest'>('grid');
+  const [layoutMode, setLayoutMode] = useState<'grid' | 'unified' | 'historical' | 'backtest' | 'symbols'>('grid');
   const [voiceAlertsEnabled, setVoiceAlertsEnabled] = useState(false);
   const [soundAlertsEnabled, setSoundAlertsEnabled] = useState(false);
   const [selectedSound, setSelectedSound] = useState('alert');
@@ -165,7 +167,7 @@ function App() {
   }, [alerts]);
 
   // Memoize event handlers to prevent child re-renders
-  const handleLayoutModeChange = useCallback((mode: 'grid' | 'unified' | 'historical' | 'backtest') => {
+  const handleLayoutModeChange = useCallback((mode: 'grid' | 'unified' | 'historical' | 'backtest' | 'symbols') => {
     setLayoutMode(mode);
   }, []);
 
@@ -190,6 +192,10 @@ function App() {
           case '4':
             e.preventDefault();
             handleLayoutModeChange('backtest');
+            break;
+          case '5':
+            e.preventDefault();
+            handleLayoutModeChange('symbols');
             break;
           case 'v':
             e.preventDefault();
@@ -250,6 +256,16 @@ function App() {
             title="Switch to backtesting (Ctrl+4)"
           >
             <span>BACKTEST</span>
+          </button>
+          <button
+            className={`toggle-btn ${layoutMode === 'symbols' ? 'active' : ''}`}
+            onClick={() => handleLayoutModeChange('symbols')}
+            role="tab"
+            aria-selected={layoutMode === 'symbols'}
+            aria-controls="main-content"
+            title="Switch to gap symbols monitor (Ctrl+5)"
+          >
+            <span>GAP SYMBOLS</span>
           </button>
         </div>
 
@@ -354,6 +370,12 @@ function App() {
             gapScanner={gapScanner}
           />
         </div>
+      ) : layoutMode === 'symbols' ? (
+        <div className="symbols-layout">
+          <GapSymbolsMonitor
+            gapScanner={gapScanner}
+          />
+        </div>
       ) : (
         <div className="backtest-layout">
           <Backtesting
@@ -363,7 +385,7 @@ function App() {
         )}
       </main>
 
-      {layoutMode !== 'unified' && layoutMode !== 'backtest' && (
+      {layoutMode !== 'unified' && layoutMode !== 'backtest' && layoutMode !== 'symbols' && (
         <StatusBar
           isConnected={isConnected}
           stats={stats}

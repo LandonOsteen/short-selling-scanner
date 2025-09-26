@@ -62,7 +62,17 @@ export class GapScanner {
   private isScanning: boolean = false;
   private scanInterval: number | null = null;
   private alertCallbacks: ((alert: Alert) => void)[] = [];
+  private firedAlertIds: Set<string> = new Set();
   private config: ScannerConfig;
+
+  // Pattern state tracking to persist across scans - CRITICAL FIX
+  private patternStates = new Map<string, {
+    hod: number;
+    consecutiveGreenCandles: number;
+    lastBarWasGreen: boolean;
+    greenRunStartPrice?: number;
+    lastAnalyzedBarTimestamp: number;
+  }>();
 
   // Performance optimizations
   private requestCache: Map<string, { data: any; timestamp: number }> = new Map();
@@ -183,7 +193,7 @@ export class GapScanner {
       try {
         const response = await fetch(url, {
           ...options,
-          timeout: 10000, // 10 second timeout
+          timeout: this.config.api.httpTimeout,
         } as any);
 
         if (!response.ok) {
@@ -274,23 +284,22 @@ export class GapScanner {
     }
 
     try {
-      console.log(`Fetching gappers from Polygon API at ET ${this.formatETTime(now)}`);
+      console.log(`Fetching gappers from Polygon API at ET ${this.formatETTime(now)} (Hour: ${etHour.toFixed(2)})`);
+      console.log(`Using config: ${this.config.gapCriteria.minGapPercentage}%+ gap, ${(this.config.gapCriteria.minCumulativeVolume/1000).toFixed(0)}K+ volume, $${this.config.gapCriteria.minPrice}-${this.config.gapCriteria.maxPrice} price`);
+      console.log(`Market Hours: ${this.config.marketHours.startTime} - ${this.config.marketHours.endTime} ET`);
 
-      // Use different strategies based on market session
-      let qualifyingStocks: GapStock[] = [];
-
-      if (etHour >= 4 && etHour < 9.5) {
-        // Pre-market hours: Use real-time gainers data
-        qualifyingStocks = await this.fetchPreMarketGappers(today);
+      // Use live gainers endpoint during all configured market hours
+      if (this.isWithinMarketHours(now)) {
+        console.log('📈 LIVE MODE: Using live gainers endpoint (within market hours)');
+        const qualifyingStocks = await this.fetchLiveGappers(today);
+        console.log(`Found ${qualifyingStocks.length} qualifying gap stocks:`, qualifyingStocks.map(s => s.symbol));
+        return qualifyingStocks;
       } else {
-        // Outside pre-market: Use historical analysis for consistent results
-        qualifyingStocks = await this.fetchHistoricalGappers(today);
+        console.log('🕐 MARKET CLOSED: Outside configured market hours, using historical data');
+        const qualifyingStocks = await this.fetchHistoricalGappers(today);
+        console.log(`Found ${qualifyingStocks.length} historical gap stocks:`, qualifyingStocks.map(s => s.symbol));
+        return qualifyingStocks;
       }
-
-      console.log(`Found ${qualifyingStocks.length} qualifying gap stocks:`, qualifyingStocks.map(s => s.symbol));
-
-      // Return only real data - no fallback to mock data
-      return qualifyingStocks;
 
     } catch (error) {
       console.error('Error fetching gainers:', error);
@@ -298,36 +307,168 @@ export class GapScanner {
     }
   }
 
-  // Fetch pre-market gappers using real-time data
-  private async fetchPreMarketGappers(today: string): Promise<GapStock[]> {
+  // Fetch live gappers using real-time snapshot data
+  private async fetchLiveGappers(today: string): Promise<GapStock[]> {
     const gainersUrl = `https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/gainers?apikey=${this.polygonApiKey}`;
 
-    const gainersData: PolygonGainersResponse = await this.cachedFetch(gainersUrl);
+    console.log('Fetching live gainers from Polygon API...');
+    const gainersData = await this.cachedFetch(gainersUrl);
 
-    if (gainersData.status !== 'OK' || !gainersData.results) {
+    if (gainersData.status !== 'OK' || !gainersData.tickers) {
       console.warn('No real-time gainers data available');
       return [];
     }
 
-    console.log(`Processing ${gainersData.results.length} real-time gainers`);
+    console.log(`Processing ${gainersData.tickers.length} real-time gainers for live gaps`);
 
+    // Filter using the actual snapshot data structure from your example
     const qualifyingStocks: GapStock[] = [];
 
-    for (const gainer of gainersData.results.slice(0, 20)) {
+    for (const ticker of gainersData.tickers) {
       try {
-        if (gainer.change_percentage < 20) continue;
+        // Extract data according to the actual snapshot structure
+        const lastPrice = ticker.lastTrade?.p;         // lastTrade.p (current price)
+        const avgVolume = ticker.min?.av;              // min.av (average volume)
+        const changePerc = ticker.todaysChangePerc;    // todaysChangePerc (gap percentage)
+        const tickerSymbol = ticker.ticker;            // ticker symbol
+        const previousClose = ticker.prevDay?.c;       // Previous day close for gap calculation
 
-        const gapStock = await this.analyzeStockForGap(gainer.ticker, today);
-        if (gapStock) {
+        if (!lastPrice || !avgVolume || !changePerc || !tickerSymbol || !previousClose) {
+          continue; // Skip if missing required data
+        }
+
+        // Apply your specified criteria: $1-$20 price, >500k volume, >20% gap
+        const priceInRange = lastPrice >= this.config.gapCriteria.minPrice && lastPrice <= this.config.gapCriteria.maxPrice;
+        const volumeQualified = avgVolume >= this.config.gapCriteria.minCumulativeVolume;
+        const gapQualified = changePerc >= this.config.gapCriteria.minGapPercentage;
+
+        if (priceInRange && volumeQualified && gapQualified) {
+          console.log(`✅ ${tickerSymbol}: QUALIFIED - ${changePerc.toFixed(1)}% gap, ${(avgVolume/1000).toFixed(0)}K volume, $${lastPrice.toFixed(2)}`);
+
+          // Create gap stock from live data
+          const gapStock: GapStock = {
+            symbol: tickerSymbol,
+            gapPercent: changePerc,
+            currentPrice: lastPrice,
+            previousClose: previousClose,
+            volume: avgVolume,
+            cumulativeVolume: avgVolume, // Use min.av as cumulative volume
+            hod: ticker.day?.h || lastPrice, // Use day high or current price
+            lastUpdated: Date.now(),
+            ema200: undefined
+          };
+
           qualifyingStocks.push(gapStock);
+        } else {
+          const reasons = [];
+          if (!priceInRange) reasons.push(`price $${lastPrice.toFixed(2)} not in $${this.config.gapCriteria.minPrice}-$${this.config.gapCriteria.maxPrice}`);
+          if (!volumeQualified) reasons.push(`volume ${(avgVolume/1000).toFixed(0)}K < ${(this.config.gapCriteria.minCumulativeVolume/1000).toFixed(0)}K`);
+          if (!gapQualified) reasons.push(`gap ${changePerc.toFixed(1)}% < ${this.config.gapCriteria.minGapPercentage}%`);
+
+          if (this.config.development.enableDebugLogging) {
+            console.log(`❌ ${tickerSymbol}: REJECTED - ${reasons.join(', ')}`);
+          }
         }
       } catch (error) {
-        console.warn(`Error analyzing ${gainer.ticker}:`, error);
+        console.warn(`Error processing ticker data:`, error);
       }
     }
 
+    console.log(`Final qualifying live gap stocks: ${qualifyingStocks.length}`);
     return qualifyingStocks;
   }
+
+  // Calculate accurate premarket volume from minute bars (4:00 AM to current time)
+  private async getPremarketVolume(symbol: string, date: string): Promise<number | null> {
+    try {
+      // Get current time to determine end of premarket volume calculation
+      const now = this.getCurrentTime();
+      const marketStart = this.getMarketStartTime();
+      const marketOpen = new Date(marketStart);
+      marketOpen.setHours(9, 30, 0, 0); // 9:30 AM ET
+
+      // Use current time if we're still in premarket, otherwise use market open
+      const endTime = now < marketOpen ? now : marketOpen;
+
+      console.log(`Calculating premarket volume for ${symbol} from ${this.formatETTime(marketStart)} to ${this.formatETTime(endTime)}`);
+
+      // Get minute bars for the premarket period
+      const bars = await this.getHistoricalBars(symbol, marketStart, endTime);
+
+      if (bars.length === 0) {
+        console.warn(`No premarket bars found for ${symbol}`);
+        return null;
+      }
+
+      // Sum up volume from all premarket bars (4:00 AM to current time or 9:30 AM)
+      const totalPremarketVolume = bars.reduce((sum, bar) => {
+        const barTime = new Date(bar.t);
+        const etHour = this.getETHour(barTime);
+        // Only count bars in premarket hours (4:00 AM - 9:30 AM ET)
+        if (etHour >= 4 && etHour < 9.5) {
+          return sum + bar.v;
+        }
+        return sum;
+      }, 0);
+
+      console.log(`${symbol}: Calculated premarket volume = ${(totalPremarketVolume/1000).toFixed(0)}K from ${bars.length} minute bars`);
+
+      return totalPremarketVolume;
+
+    } catch (error) {
+      console.error(`Error calculating premarket volume for ${symbol}:`, error);
+      return null;
+    }
+  }
+
+  // Initialize or update pattern state for a symbol from historical bars
+  private initializePatternState(symbol: string, bars: PolygonBar[]): void {
+    if (bars.length === 0) return;
+
+    // Calculate HOD from all bars
+    const hod = Math.max(...bars.map(bar => bar.h));
+
+    // Calculate consecutive green candles and green run state
+    let consecutiveGreen = 0;
+    let lastBarWasGreen = false;
+    let greenRunStartPrice: number | undefined;
+
+    // Process bars in chronological order to build state
+    for (let i = 0; i < bars.length; i++) {
+      const bar = bars[i];
+      const isGreen = bar.c > bar.o;
+
+      if (isGreen) {
+        if (!lastBarWasGreen) {
+          // Starting a new green run
+          greenRunStartPrice = bar.o;
+          consecutiveGreen = 1;
+        } else {
+          // Continuing green run
+          consecutiveGreen++;
+        }
+        lastBarWasGreen = true;
+      } else {
+        // Red bar - reset green run
+        consecutiveGreen = 0;
+        lastBarWasGreen = false;
+        greenRunStartPrice = undefined;
+      }
+    }
+
+    const lastBar = bars[bars.length - 1];
+
+    this.patternStates.set(symbol, {
+      hod,
+      consecutiveGreenCandles: consecutiveGreen,
+      lastBarWasGreen,
+      greenRunStartPrice,
+      lastAnalyzedBarTimestamp: lastBar.t
+    });
+
+    console.log(`Initialized pattern state for ${symbol}: HOD=${hod.toFixed(2)}, ConsecGreen=${consecutiveGreen}, LastGreen=${lastBarWasGreen}`);
+  }
+
 
   // Fetch historical gappers for consistent results outside pre-market
   private async fetchHistoricalGappers(today: string): Promise<GapStock[]> {
@@ -344,66 +485,105 @@ export class GapScanner {
   }
 
 
-  // Backfill data using Polygon REST API for historical 1-minute bars
+  // Enhanced backfill data using Polygon REST API for historical 1-minute bars
   async backfillMissedData(): Promise<Alert[]> {
     const now = this.getCurrentTime();
     const startTime = this.getMarketStartTime();
     const marketEnd = this.getMarketEndTime();
 
     if (this.config.development.enableDebugLogging) {
-      console.log('=== BACKFILL DEBUG ===');
+      console.log('=== ENHANCED BACKFILL DEBUG ===');
       console.log('Current time:', this.formatETTime(now));
       console.log(`${this.config.marketHours.startTime} ET:`, this.formatETTime(startTime));
       console.log(`${this.config.marketHours.endTime} ET:`, this.formatETTime(marketEnd));
       console.log('API Key available:', !!this.polygonApiKey);
+      console.log('Extended Hours Support:', this.config.marketHours.endTime === '16:00' ? '✅' : '❌');
     }
 
-    // Determine current ET time for consistent time window logic (if needed for debugging)
-    // const etHour = this.getETHour(now);
+    // Determine current ET time for session analysis
+    const etHour = this.getETHour(now);
+    const isPremarket = etHour >= 4 && etHour < 9.5;
+    const isRegularHours = etHour >= 9.5 && etHour < 16;
+    const isAfterHours = etHour >= 16 || etHour < 4;
 
-    // Backfill logic: always provide historical data for configured market hours
+    console.log(`📊 Session Analysis: Premarket=${isPremarket}, Regular=${isRegularHours}, After=${isAfterHours}, Current=${etHour.toFixed(2)}`);
+
+    // Enhanced backfill logic for extended hours support
     let endTime: number;
+    let backfillReason: string;
 
     if (!this.isWithinMarketHours(now) && now.getTime() < startTime.getTime()) {
       if (this.config.development.enableDebugLogging) {
-        console.log('Accessing before market hours - no backfill needed');
+        console.log('🕐 Before market hours - no backfill needed');
       }
       return [];
     } else if (this.isWithinMarketHours(now)) {
-      // During market hours: backfill from start time to current time
+      // During configured market hours: backfill from start time to current time
       endTime = now.getTime();
+      backfillReason = `Market session active (${isPremarket ? 'premarket' : isRegularHours ? 'regular' : 'extended'})`;
+
       if (this.config.development.enableDebugLogging) {
-        console.log(`Market session active - backfilling from ${this.config.marketHours.startTime} to current time`);
+        console.log(`🔴 LIVE BACKFILL: ${backfillReason} - backfilling from ${this.config.marketHours.startTime} to current time`);
       }
     } else {
-      // After market hours: backfill the complete session
+      // After market hours: backfill the complete configured session
       endTime = marketEnd.getTime();
+      backfillReason = `Market closed - complete session`;
+
       if (this.config.development.enableDebugLogging) {
-        console.log(`Market closed - backfilling complete session (${this.config.marketHours.startTime} - ${this.config.marketHours.endTime})`);
+        console.log(`⏹️ COMPLETE BACKFILL: ${backfillReason} (${this.config.marketHours.startTime} - ${this.config.marketHours.endTime})`);
       }
     }
 
-    console.log(`Backfilling data from ${this.formatETTime(startTime)} to ${this.formatETTime(new Date(endTime))}`);
+    const backfillStartTime = this.formatETTime(startTime);
+    const backfillEndTime = this.formatETTime(new Date(endTime));
+    console.log(`🔄 Backfilling from ${backfillStartTime} to ${backfillEndTime} (${backfillReason})`);
 
     // Use today's date in ET timezone for historical scan
     const etNowForDate = new Date(now.toLocaleString("en-US", {timeZone: "America/New_York"}));
     const todayDateString = `${etNowForDate.getFullYear()}-${String(etNowForDate.getMonth() + 1).padStart(2, '0')}-${String(etNowForDate.getDate()).padStart(2, '0')}`;
-    console.log(`Using today's date (ET timezone) for backfill: ${todayDateString}`);
+    console.log(`📅 Using today's date (ET timezone) for backfill: ${todayDateString}`);
 
     try {
-      // Get today's historical alerts (this will use proper filtering)
+      // Get today's historical alerts with enhanced filtering for extended hours
       const backfilledAlerts = await this.getHistoricalAlertsForDate(todayDateString);
 
       // Filter alerts to only include those in our backfill time window
-      const filteredAlerts = backfilledAlerts.filter(alert =>
-        alert.timestamp >= startTime.getTime() && alert.timestamp <= endTime
-      );
+      const filteredAlerts = backfilledAlerts.filter(alert => {
+        const alertTime = new Date(alert.timestamp);
+        const inTimeWindow = alert.timestamp >= startTime.getTime() && alert.timestamp <= endTime;
 
-      console.log(`Backfilled ${filteredAlerts.length} alerts from ${this.formatETTime(startTime)} to ${this.formatETTime(new Date(endTime))}`);
+        if (this.config.development.enableDebugLogging && !inTimeWindow) {
+          console.log(`⏰ FILTERING OUT ALERT: ${alert.symbol} at ${this.formatETTime(alertTime)} (outside window ${backfillStartTime} - ${backfillEndTime})`);
+        }
+
+        return inTimeWindow;
+      });
+
+      console.log(`✅ Backfilled ${filteredAlerts.length} alerts from ${backfillStartTime} to ${backfillEndTime}`);
+
+      if (this.config.development.enableDebugLogging && backfilledAlerts.length > filteredAlerts.length) {
+        console.log(`📊 BACKFILL FILTER STATS: ${backfilledAlerts.length} total alerts → ${filteredAlerts.length} in time window (filtered out ${backfilledAlerts.length - filteredAlerts.length})`);
+      }
+
+      // Additional session breakdown for extended hours
+      if (this.config.development.enableDebugLogging && this.config.marketHours.endTime === '16:00') {
+        const premarketAlerts = filteredAlerts.filter(alert => {
+          const alertHour = this.getETHour(new Date(alert.timestamp));
+          return alertHour >= 4 && alertHour < 9.5;
+        });
+
+        const regularHoursAlerts = filteredAlerts.filter(alert => {
+          const alertHour = this.getETHour(new Date(alert.timestamp));
+          return alertHour >= 9.5 && alertHour < 16;
+        });
+
+        console.log(`📈 SESSION BREAKDOWN: Premarket=${premarketAlerts.length}, Regular=${regularHoursAlerts.length}`);
+      }
 
       return filteredAlerts.sort((a, b) => a.timestamp - b.timestamp);
     } catch (error) {
-      console.error('Backfill failed, using fallback method:', error);
+      console.error('Enhanced backfill failed:', error);
 
       // If no API key, throw error instead of using mock data
       if (!this.polygonApiKey) {
@@ -425,26 +605,33 @@ export class GapScanner {
     // Initial scan
     this.scanForGappers();
 
-    // Scan every 30 seconds during configured market hours
+    // Enhanced scanning at configured intervals during market hours (supports extended hours)
     this.scanInterval = window.setInterval(async () => {
       try {
+        const now = this.getCurrentTime();
+        const etHour = this.getETHour(now);
+        const isPremarket = etHour >= 4 && etHour < 9.5;
+        const isRegularHours = etHour >= 9.5 && etHour < 16;
+
+        // Always scan for gap stocks first
         await this.scanForGappers();
 
-        // Scan for live patterns during configured market hours
-        const now = this.getCurrentTime();
-
+        // Enhanced live pattern scanning with session awareness
         if (this.isWithinMarketHours(now)) {
+          const sessionType = isPremarket ? 'premarket' : isRegularHours ? 'regular' : 'extended';
+
           if (this.config.development.enableDebugLogging) {
-            console.log(`Scanning for live patterns at ${this.formatETTime(now)}`);
+            console.log(`🔍 Scanning for live patterns at ${this.formatETTime(now)} (${sessionType} session)`);
           }
+
           await this.scanForLivePatterns();
         } else if (this.config.development.enableDebugLogging) {
-          console.log(`Outside market hours at ${this.formatETTime(now)} - skipping live pattern scan`);
+          console.log(`🕐 Outside configured market hours at ${this.formatETTime(now)} (${this.config.marketHours.startTime}-${this.config.marketHours.endTime}) - skipping live pattern scan`);
         }
       } catch (error) {
-        console.error('Error in scanning interval:', error);
+        console.error('Error in enhanced scanning interval:', error);
       }
-    }, 30000);
+    }, this.config.scanning.scanInterval);
   }
 
   // Stop scanning
@@ -470,8 +657,8 @@ export class GapScanner {
       gapPercent: stock.gapPercent,
       volume: stock.cumulativeVolume,
       hod: stock.hod,
-      bid: stock.currentPrice - 0.01,
-      ask: stock.currentPrice + 0.01
+      bid: stock.currentPrice - this.config.scanning.bidAskSpread,
+      ask: stock.currentPrice + this.config.scanning.bidAskSpread
     }));
   }
 
@@ -480,8 +667,24 @@ export class GapScanner {
     this.alertCallbacks.push(callback);
   }
 
-  // Fire alert to all callbacks
+  // Fire alert to all callbacks with proper deduplication
   private fireAlert(alert: Alert): void {
+    // Check if we've already fired this specific alert
+    if (this.firedAlertIds.has(alert.id)) {
+      return; // Skip duplicate alert
+    }
+
+    // Mark alert as fired
+    this.firedAlertIds.add(alert.id);
+
+    // Clean up old alert IDs to prevent memory leak (keep last 1000)
+    if (this.firedAlertIds.size > 1000) {
+      const alertIds = Array.from(this.firedAlertIds);
+      const oldIds = alertIds.slice(0, alertIds.length - 500); // Remove oldest 500
+      oldIds.forEach(id => this.firedAlertIds.delete(id));
+    }
+
+    // Fire alert to all callbacks
     this.alertCallbacks.forEach(callback => {
       try {
         callback(alert);
@@ -489,6 +692,8 @@ export class GapScanner {
         console.error('Error in alert callback:', error);
       }
     });
+
+    console.log(`🔔 FIRED ALERT: ${alert.type} for ${alert.symbol} at ${new Date(alert.timestamp).toLocaleTimeString()}`);
   }
 
   // Scan for live patterns during premarket hours
@@ -525,30 +730,32 @@ export class GapScanner {
     const alerts: Alert[] = [];
 
     try {
-      // Get recent 1-minute bars for the last 10 minutes
+      // CRITICAL FIX: Get bars from market start (4:00 AM) to initialize pattern state properly
       const endTime = new Date(now);
-      const startTime = new Date(now - 10 * 60 * 1000); // 10 minutes ago
+      const marketStart = this.getMarketStartTime();
+      const startTime = marketStart;
 
+      console.log(`Scanning ${gapStock.symbol} patterns from ${this.formatETTime(startTime)} to ${this.formatETTime(endTime)}`);
       const bars = await this.getHistoricalBars(gapStock.symbol, startTime, endTime);
 
       if (bars.length > 0) {
-        // Detect patterns in recent bars
-        const detectedAlerts = await this.detectPatternsInBars(gapStock.symbol, bars, gapStock.ema200, gapStock.cumulativeVolume, gapStock.gapPercent);
+        // CRITICAL FIX: Initialize pattern state from all premarket bars
+        this.initializePatternState(gapStock.symbol, bars);
 
-        // Filter to only new alerts (within last minute to avoid duplicates)
-        const recentAlerts = detectedAlerts.filter(alert =>
-          now - alert.timestamp < 60000 // Last minute
-        );
+        // Only detect patterns in recent bars, but state is initialized from all bars
+        const recentBars = bars.slice(-this.config.scanning.recentBarsForPatterns); // Recent bars for pattern detection
+        const detectedAlerts = await this.detectPatternsInBars(gapStock.symbol, recentBars, gapStock.ema200, gapStock.cumulativeVolume, gapStock.gapPercent);
 
-        alerts.push(...recentAlerts);
+        // All detected alerts are valid - deduplication happens in fireAlert()
+        alerts.push(...detectedAlerts);
 
-        if (recentAlerts.length > 0) {
-          console.log(`🔔 ALERT: ${recentAlerts.length} new patterns for ${gapStock.symbol}`);
+        if (detectedAlerts.length > 0) {
+          console.log(`🔔 ALERT: ${detectedAlerts.length} new patterns for ${gapStock.symbol}`);
           console.log(`   📊 VOLUME CHECK: Cumulative=${(gapStock.cumulativeVolume / 1000).toFixed(0)}k, Required=${this.config.gapCriteria.minCumulativeVolume / 1000}k, Gap=${gapStock.gapPercent.toFixed(1)}%`);
           if (gapStock.cumulativeVolume < this.config.gapCriteria.minCumulativeVolume) {
             console.error(`🚨 CRITICAL: ${gapStock.symbol} VOLUME VIOLATION - ${(gapStock.cumulativeVolume/1000).toFixed(0)}k < ${this.config.gapCriteria.minCumulativeVolume/1000}k required!`);
           }
-          recentAlerts.forEach(alert => {
+          detectedAlerts.forEach(alert => {
             console.log(`   - ${alert.type}: ${alert.detail}`);
           });
         }
@@ -584,7 +791,7 @@ export class GapScanner {
 
       // Check if it's not too far in the past (API limitations)
       const daysAgo = (Date.now() - date.getTime()) / (1000 * 60 * 60 * 24);
-      if (daysAgo > 730) { // ~2 years
+      if (daysAgo > this.config.historical.maxLookbackDays) {
         throw new Error('Historical data only available for the last 2 years');
       }
 
@@ -693,7 +900,7 @@ export class GapScanner {
       }
 
       console.log(`Found ${qualifyingStocks.length} qualifying historical gap stocks`);
-      return qualifyingStocks.slice(0, 20); // Limit to top 20 for performance
+      return qualifyingStocks.slice(0, this.config.historical.maxSymbolsToAnalyze); // Limit for performance
 
     } catch (error) {
       console.error('Failed to fetch historical gap stocks:', error);
@@ -754,9 +961,14 @@ export class GapScanner {
       bars.forEach((bar, index) => {
         const timestamp = new Date(bar.t);
 
-        // Skip if outside pre-market hours (4:00 AM - 9:30 AM ET)
+        // Skip if outside configured market hours
         const etHour = this.getETHour(timestamp);
-        if (etHour < 4 || etHour >= 9.5) {
+        const [startHour, startMin] = this.config.marketHours.startTime.split(':').map(Number);
+        const [endHour, endMin] = this.config.marketHours.endTime.split(':').map(Number);
+        const startTimeInHours = startHour + startMin / 60;
+        const endTimeInHours = endHour + endMin / 60;
+
+        if (etHour < startTimeInHours || etHour >= endTimeInHours) {
           return;
         }
 
@@ -798,7 +1010,7 @@ export class GapScanner {
     }
 
     try {
-      const url = `https://api.polygon.io/v2/aggs/ticker/${symbol}/range/1/minute/${dateString}/${dateString}?adjusted=true&sort=asc&limit=50000&apikey=${this.polygonApiKey}`;
+      const url = `https://api.polygon.io/v2/aggs/ticker/${symbol}/range/1/minute/${dateString}/${dateString}?adjusted=true&sort=asc&limit=${this.config.api.aggregatesLimit}&apikey=${this.polygonApiKey}`;
 
       const data = await this.cachedFetch(url);
 
@@ -884,7 +1096,7 @@ export class GapScanner {
 
   // Get after-hours bars for previous day (4:00-8:00 PM ET)
   private async getAfterHoursBars(symbol: string, date: string): Promise<PolygonBar[]> {
-    const url = `https://api.polygon.io/v2/aggs/ticker/${symbol}/range/1/minute/${date}/${date}?adjusted=true&sort=asc&limit=50000&apikey=${this.polygonApiKey}`;
+    const url = `https://api.polygon.io/v2/aggs/ticker/${symbol}/range/1/minute/${date}/${date}?adjusted=true&sort=asc&limit=${this.config.api.aggregatesLimit}&apikey=${this.polygonApiKey}`;
 
     try {
       const response = await fetch(url);
@@ -1007,7 +1219,7 @@ export class GapScanner {
     const startDate = startTime.toISOString().split('T')[0]; // YYYY-MM-DD
     const endDate = endTime.toISOString().split('T')[0];
 
-    const url = `https://api.polygon.io/v2/aggs/ticker/${symbol}/range/1/minute/${startDate}/${endDate}?adjusted=true&sort=asc&limit=50000&apikey=${this.polygonApiKey}`;
+    const url = `https://api.polygon.io/v2/aggs/ticker/${symbol}/range/1/minute/${startDate}/${endDate}?adjusted=true&sort=asc&limit=${this.config.api.aggregatesLimit}&apikey=${this.polygonApiKey}`;
 
     try {
       const response = await fetch(url);
@@ -1023,11 +1235,16 @@ export class GapScanner {
         return [];
       }
 
-      // Filter bars to only include pre-market hours (4:00 AM - 9:30 AM ET)
+      // Filter bars to only include configured market hours
+      const [startHour, startMin] = this.config.marketHours.startTime.split(':').map(Number);
+      const [endHour, endMin] = this.config.marketHours.endTime.split(':').map(Number);
+      const startTimeInHours = startHour + startMin / 60;
+      const endTimeInHours = endHour + endMin / 60;
+
       const filteredBars = data.results.filter(bar => {
         const barTime = new Date(bar.t);
         const etHour = this.getETHour(barTime);
-        return etHour >= 4 && etHour < 9.5;
+        return etHour >= startTimeInHours && etHour < endTimeInHours;
       });
 
       console.log(`Retrieved ${filteredBars.length} 1-minute bars for ${symbol}`);
@@ -1059,8 +1276,9 @@ export class GapScanner {
       console.warn(`⚠️ ${symbol} NO CUMULATIVE VOLUME PROVIDED - this may indicate a filtering bypass!`);
     }
 
-    // Calculate extended HOD including previous day after-hours + current pre-market
-    const hod = await this.getExtendedHOD(symbol, bars);
+    // CRITICAL FIX: Use stored pattern state HOD instead of recalculating from limited bars
+    const patternState = this.patternStates.get(symbol);
+    const hod = patternState?.hod || Math.max(...bars.map(bar => bar.h));
 
     for (let i = 4; i < bars.length; i++) {
       const currentBar = bars[i];
@@ -1170,54 +1388,76 @@ export class GapScanner {
 
     const currentBar = bars[index];
 
-    // Look for consecutive green bars up to the maximum allowed
+    // FIXED: Current bar must be red (close < open)
+    const currentRed = currentBar.c < currentBar.o;
+    if (!currentRed) return null;
+
+    // FIXED: Count consecutive green bars BACKWARDS from the bar immediately before current
     let consecutiveGreen = 0;
-    for (let i = Math.min(maxConsecutiveGreen, index); i > 0; i--) {
+    for (let i = 1; i <= Math.min(maxConsecutiveGreen, index); i++) {
       const checkIndex = index - i;
       if (checkIndex >= 0 && bars[checkIndex].c > bars[checkIndex].o) {
         consecutiveGreen++;
       } else {
-        break;
+        break; // Stop at first non-green bar
       }
     }
 
-    const prevBars = bars.slice(Math.max(0, index - consecutiveGreen), index);
+    // Get the actual consecutive green bars that preceded the red bar
+    const greenRunStartIndex = Math.max(0, index - consecutiveGreen);
+    const prevBars = bars.slice(greenRunStartIndex, index);
 
-    // Check if we have enough consecutive green bars and current is red
+    // Check if we have enough consecutive green bars
     const hasMinGreenRun = consecutiveGreen >= minConsecutiveGreen;
-    const allPrevGreen = prevBars.every(bar => bar.c > bar.o);
-    const currentRed = currentBar.c < currentBar.o;
+
+    if (!hasMinGreenRun) {
+      if (this.config.development.enableDebugLogging && consecutiveGreen > 0) {
+        console.log(`🟢 ${symbol}: Found ${consecutiveGreen} green bars but need ${minConsecutiveGreen}+ for signal`);
+      }
+      return null;
+    }
 
     // Calculate total gain during green run to meet minimum threshold
-    if (hasMinGreenRun && prevBars.length > 0) {
+    if (prevBars.length > 0) {
       const runStartPrice = prevBars[0].o;
       const runEndPrice = prevBars[prevBars.length - 1].c;
       const runGainPercent = ((runEndPrice - runStartPrice) / runStartPrice) * 100;
 
       if (runGainPercent < this.config.patterns.greenRun.minRunGainPercent) {
+        if (this.config.development.enableDebugLogging) {
+          console.log(`📈 ${symbol}: Green run gain ${runGainPercent.toFixed(1)}% < required ${this.config.patterns.greenRun.minRunGainPercent}%`);
+        }
         return null; // Run gain too small
       }
     }
 
-    // Only trigger near HOD
+    // Only trigger near HOD (using current bar's high, not close)
     const hodDistanceThreshold = 1 - (this.config.patterns.hod.nearHodDistancePercent / 100);
     const nearHOD = currentBar.h >= hod * hodDistanceThreshold;
 
-    if (hasMinGreenRun && allPrevGreen && currentRed && nearHOD) {
-      return {
-        id: `${symbol}-${timestamp.getTime()}-Run4PlusGreenThenRed`,
-        timestamp: timestamp.getTime(),
-        symbol,
-        type: 'Run4PlusGreenThenRed',
-        detail: `${consecutiveGreen} green candles then red near HOD ${hod.toFixed(2)}`,
-        price: currentBar.c,
-        volume: cumulativeVolume || currentBar.v, // Use cumulative volume if available
-        gapPercent: gapPercent,
-        historical: true
-      };
+    if (!nearHOD) {
+      if (this.config.development.enableDebugLogging) {
+        const distanceFromHod = ((hod - currentBar.h) / hod) * 100;
+        console.log(`🎯 ${symbol}: Not near HOD - ${distanceFromHod.toFixed(1)}% from HOD ${hod.toFixed(2)} (need within ${this.config.patterns.hod.nearHodDistancePercent}%)`);
+      }
+      return null;
     }
 
-    return null;
+    if (this.config.development.enableDebugLogging) {
+      console.log(`🔴 ${symbol}: QUALIFIED GREEN-THEN-RED - ${consecutiveGreen} green bars then red near HOD ${hod.toFixed(2)}`);
+    }
+
+    return {
+      id: `${symbol}-${timestamp.getTime()}-Run4PlusGreenThenRed`,
+      timestamp: timestamp.getTime(),
+      symbol,
+      type: 'Run4PlusGreenThenRed',
+      detail: `${consecutiveGreen} green candles then red near HOD ${hod.toFixed(2)}`,
+      price: currentBar.c,
+      volume: cumulativeVolume || currentBar.v, // Use cumulative volume if available
+      gapPercent: gapPercent,
+      historical: true
+    };
   }
 
 
@@ -1268,7 +1508,7 @@ export class GapScanner {
       console.log(`Top 10 by volume:`, volumeSorted.slice(0, 10).map(bar => `${bar.T}:${(bar.v/1000).toFixed(0)}k`));
 
       const symbolsToCheck = data.results
-        .filter(bar => bar.v >= 50000) // Reduced from 100k to 50k to be less restrictive
+        .filter(bar => bar.v >= this.config.historical.minVolumeForDiscovery) // Volume filter for discovery
         .sort((a, b) => b.v - a.v) // Sort by volume descending
         .slice(0, 300) // Increased from 200 to 300 symbols
         .map(bar => ({ symbol: bar.T || 'UNKNOWN', volume: bar.v }));
@@ -1342,7 +1582,7 @@ export class GapScanner {
         .filter((ticker: any) =>
           ticker.todaysChangePerc &&
           Math.abs(ticker.todaysChangePerc) >= 15 && // At least 15% change
-          ticker.day?.v >= 50000 // Some volume
+          ticker.day?.v >= this.config.gapCriteria.minCumulativeVolume // Use config-based volume filter
         )
         .slice(0, 50) // Limit to 50 candidates
         .map((ticker: any) => ticker.ticker);
@@ -1408,28 +1648,35 @@ export class GapScanner {
         return null;
       }
 
-      // Filter to pre-market hours (4:00 AM - 9:30 AM ET)
-      const preMarketBars = barsData.results.filter(bar => {
+      // Filter to configured market hours (supports both premarket-only and extended hours)
+      const [startHour, startMin] = this.config.marketHours.startTime.split(':').map(Number);
+      const [endHour, endMin] = this.config.marketHours.endTime.split(':').map(Number);
+      const startTimeInHours = startHour + startMin / 60;
+      const endTimeInHours = endHour + endMin / 60;
+
+      const marketHoursBars = barsData.results.filter(bar => {
         const barTime = new Date(bar.t);
         const etHour = this.getETHour(barTime);
-        return etHour >= 4 && etHour < 9.5;
+        return etHour >= startTimeInHours && etHour < endTimeInHours;
       });
 
-      if (preMarketBars.length === 0) {
+      console.log(`📊 Filtered ${marketHoursBars.length} bars for configured hours (${this.config.marketHours.startTime}-${this.config.marketHours.endTime}) from ${barsData.results.length} total bars`);
+
+      if (marketHoursBars.length === 0) {
         return null;
       }
 
       // Calculate metrics
-      const currentPrice = preMarketBars[preMarketBars.length - 1].c;
-      const hod = await this.getExtendedHOD(symbol, preMarketBars);
-      const totalVolume = preMarketBars.reduce((sum, bar) => sum + bar.v, 0);
+      const currentPrice = marketHoursBars[marketHoursBars.length - 1].c;
+      const hod = await this.getExtendedHOD(symbol, marketHoursBars);
+      const totalVolume = marketHoursBars.reduce((sum, bar) => sum + bar.v, 0);
       const gapPercent = ((currentPrice - previousClose) / previousClose) * 100;
 
       // Calculate daily 200 EMA (only once per symbol per day)
       const ema200 = await this.getDailyEMA200(symbol, date);
 
       // Debug logging for all symbols being analyzed
-      console.log(`📊 ${symbol}: ${gapPercent.toFixed(1)}% gap, ${(totalVolume / 1000).toFixed(0)}k volume, $${currentPrice.toFixed(2)}, ${preMarketBars.length} bars (min vol required: ${this.config.gapCriteria.minCumulativeVolume / 1000}k)`);
+      console.log(`📊 ${symbol}: ${gapPercent.toFixed(1)}% gap, ${(totalVolume / 1000).toFixed(0)}k volume, $${currentPrice.toFixed(2)}, ${marketHoursBars.length} bars (min vol required: ${this.config.gapCriteria.minCumulativeVolume / 1000}k)`);
 
       // Use configured criteria for gap, volume, and price filtering
       if (gapPercent >= this.config.gapCriteria.minGapPercentage &&
@@ -1443,7 +1690,7 @@ export class GapScanner {
           gapPercent,
           currentPrice,
           previousClose,
-          volume: preMarketBars[preMarketBars.length - 1].v,
+          volume: marketHoursBars[marketHoursBars.length - 1].v,
           cumulativeVolume: totalVolume,
           hod,
           lastUpdated: Date.now(),

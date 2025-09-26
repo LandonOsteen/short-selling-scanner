@@ -28,9 +28,6 @@ export interface ScannerConfig {
 
     // Volume requirements
     minCumulativeVolume: number; // 100000 = 100K shares
-
-    // Average volume filter (minimum 10-day average volume)
-    minAvgVolume: number; // 50000 = 50K shares
   };
 
   // Pattern Detection Parameters
@@ -42,9 +39,6 @@ export interface ScannerConfig {
 
       // Maximum distance from HOD to still be considered "near"
       maxHodDistancePercent: number; // 2.0 = 2% from HOD
-
-      // Minimum time after HOD was set (in minutes)
-      minTimeAfterHod: number; // 5 minutes
     };
 
     // Topping Tail patterns (1-minute)
@@ -75,32 +69,43 @@ export interface ScannerConfig {
     };
   };
 
-  // Data and Performance Settings
-  performance: {
-    // Maximum alerts to keep in memory per pattern
-    maxAlertsPerPattern: number; // 20
-
-    // Maximum total alerts in memory
-    maxTotalAlerts: number; // 100
-
-    // How often to update symbol list (in milliseconds)
-    symbolUpdateInterval: number; // 120000 = 2 minutes
-
-    // Debounce delay for symbol updates (in milliseconds)
-    symbolUpdateDebounce: number; // 1000 = 1 second
-  };
-
   // API Configuration
   api: {
-    // Rate limiting
-    maxRequestsPerMinute: number; // 5
-
     // Retry configuration
     maxRetries: number; // 3
-    retryDelay: number; // 1000 = 1 second
 
     // Timeout for API requests (in milliseconds)
     requestTimeout: number; // 30000 = 30 seconds
+
+    // HTTP timeout for individual requests (in milliseconds)
+    httpTimeout: number; // 10000 = 10 seconds
+
+    // Polygon API limits
+    aggregatesLimit: number; // 50000 = 50K bars per request
+  };
+
+  // Scanning Behavior
+  scanning: {
+    // How often to scan for new opportunities (in milliseconds)
+    scanInterval: number; // 30000 = 30 seconds
+
+    // Number of recent bars to analyze for patterns
+    recentBarsForPatterns: number; // 10
+
+    // Bid/ask spread for symbol data display
+    bidAskSpread: number; // 0.01
+  };
+
+  // Historical Analysis
+  historical: {
+    // Maximum days to look back for historical data
+    maxLookbackDays: number; // 730 = ~2 years
+
+    // Number of symbols to analyze in historical scan
+    maxSymbolsToAnalyze: number; // 20
+
+    // Minimum volume threshold for symbol discovery
+    minVolumeForDiscovery: number; // 50000
   };
 
   // Development and Testing
@@ -108,14 +113,8 @@ export interface ScannerConfig {
     // Enable debug logging
     enableDebugLogging: boolean; // true
 
-    // Mock data mode for testing
-    useMockData: boolean; // false
-
     // Override current time for testing (ISO string or null)
     overrideCurrentTime: string | null; // "2024-09-25T14:00:00.000Z"
-
-    // Enable performance monitoring
-    enablePerformanceMonitoring: boolean; // true
   };
 }
 
@@ -133,19 +132,17 @@ export const defaultScannerConfig: ScannerConfig = {
   },
 
   gapCriteria: {
-    minGapPercentage: 10.0,
+    minGapPercentage: 20.0,
     maxGapPercentage: 10000.0,
     minPrice: 1.0,
-    maxPrice: 50.0,
-    minCumulativeVolume: 1000000,
-    minAvgVolume: 100,
+    maxPrice: 20.0,
+    minCumulativeVolume: 500000,
   },
 
   patterns: {
     hod: {
-      nearHodDistancePercent: 1.0, // Tighter range: 0.1% instead of loose range
+      nearHodDistancePercent: 3.0, // Tighter range: 3% instead of loose range
       maxHodDistancePercent: 10.0, // Maximum 10% from HOD
-      minTimeAfterHod: 1, // At least 1 minute after HOD
     },
 
     toppingTail: {
@@ -162,25 +159,28 @@ export const defaultScannerConfig: ScannerConfig = {
     },
   },
 
-  performance: {
-    maxAlertsPerPattern: 20,
-    maxTotalAlerts: 100,
-    symbolUpdateInterval: 120000,
-    symbolUpdateDebounce: 1000,
+  api: {
+    maxRetries: 3,
+    requestTimeout: 30000,
+    httpTimeout: 10000,
+    aggregatesLimit: 50000,
   },
 
-  api: {
-    maxRequestsPerMinute: 5,
-    maxRetries: 3,
-    retryDelay: 1000,
-    requestTimeout: 30000,
+  scanning: {
+    scanInterval: 30000,
+    recentBarsForPatterns: 10,
+    bidAskSpread: 0.01,
+  },
+
+  historical: {
+    maxLookbackDays: 730,
+    maxSymbolsToAnalyze: 20,
+    minVolumeForDiscovery: 50000,
   },
 
   development: {
     enableDebugLogging: true,
-    useMockData: false,
     overrideCurrentTime: null,
-    enablePerformanceMonitoring: true,
   },
 };
 
@@ -192,15 +192,21 @@ export const defaultScannerConfig: ScannerConfig = {
  */
 export const getScannerConfig = (): ScannerConfig => {
   // You can add environment-specific overrides here
-  const config = { ...defaultScannerConfig };
+  let config = { ...defaultScannerConfig };
+
+  // Check for extended hours configuration
+  const useExtendedHours = process.env.REACT_APP_USE_EXTENDED_HOURS === 'true';
+
+  if (useExtendedHours) {
+    console.log('🕐 Using EXTENDED HOURS configuration (4:00 AM - 4:00 PM ET)');
+    config = { ...exampleConfigs.extendedHours };
+  }
 
   // Example: Override for testing environment
   if (process.env.NODE_ENV === 'development') {
-    // Uncomment to test with extended hours
+    // You can manually override hours here if needed
     // config.marketHours.endTime = "16:00"; // 4:00 PM for testing
-    // Uncomment to use tighter criteria for testing
-    // config.gapCriteria.minGapPercentage = 3.0;
-    // config.patterns.hod.nearHodDistancePercent = 0.2;
+    // config.gapCriteria.minGapPercentage = 20.0;
   }
 
   return config;
@@ -291,7 +297,6 @@ export const exampleConfigs = {
       hod: {
         nearHodDistancePercent: 0.2,
         maxHodDistancePercent: 0.8,
-        minTimeAfterHod: 5,
       },
     },
   } as ScannerConfig,
@@ -310,7 +315,6 @@ export const exampleConfigs = {
       hod: {
         nearHodDistancePercent: 0.5,
         maxHodDistancePercent: 2.0,
-        minTimeAfterHod: 1,
       },
     },
   } as ScannerConfig,
@@ -326,7 +330,34 @@ export const exampleConfigs = {
     development: {
       ...defaultScannerConfig.development,
       enableDebugLogging: true,
-      enablePerformanceMonitoring: true,
+    },
+  } as ScannerConfig,
+
+  // Extended hours for full day trading (premarket + regular market)
+  extendedHours: {
+    ...defaultScannerConfig,
+    marketHours: {
+      ...defaultScannerConfig.marketHours,
+      startTime: '04:00', // 4:00 AM ET (premarket start)
+      endTime: '16:00', // 4:00 PM ET (market close)
+    },
+    gapCriteria: {
+      ...defaultScannerConfig.gapCriteria,
+      minGapPercentage: 20.0,
+      minCumulativeVolume: 500000,
+    },
+    api: {
+      ...defaultScannerConfig.api,
+    },
+    scanning: {
+      ...defaultScannerConfig.scanning,
+    },
+    historical: {
+      ...defaultScannerConfig.historical,
+    },
+    development: {
+      ...defaultScannerConfig.development,
+      enableDebugLogging: true,
     },
   } as ScannerConfig,
 };
