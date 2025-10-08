@@ -1,6 +1,7 @@
 // Gap Scanner Service - Real gap stock detection with volume criteria
 import { Alert, PatternType, SymbolData } from '../types';
 import { getScannerConfig, validateScannerConfig, ScannerConfig } from '../config/scannerConfig';
+import { WebSocketScanner } from './WebSocketScanner';
 
 export interface GapStock {
   symbol: string;
@@ -65,6 +66,8 @@ export class GapScanner {
   private firedAlertIds: Set<string> = new Set();
   private lastBackfillTime: number = 0;
   private config: ScannerConfig;
+  private webSocketScanner: WebSocketScanner | null = null;
+  private useWebSocket: boolean = true; // Enable WebSocket for real-time scanning
 
   // Pattern state tracking to persist across scans - CRITICAL FIX
   private patternStates = new Map<string, {
@@ -87,6 +90,20 @@ export class GapScanner {
 
     // Validate configuration on startup
     this.validateAndApplyConfig();
+
+    // Initialize WebSocket scanner with pattern detection methods
+    if (this.useWebSocket && this.polygonApiKey) {
+      this.webSocketScanner = new WebSocketScanner(
+        this.polygonApiKey,
+        this.config,
+        {
+          detectToppingTail5m: this.detectToppingTail5m.bind(this),
+          detectGreenRunReject: this.detectGreenRunReject.bind(this),
+          detectTestSignal: this.detectTestSignal.bind(this)
+        }
+      );
+      console.log('✅ WebSocket scanner initialized');
+    }
   }
 
   // Clear API response cache - needed when configuration changes
@@ -809,68 +826,218 @@ export class GapScanner {
   }
 
   // Start continuous backfill-based scanning
-  startScanning(): void {
-    if (this.isScanning) return;
+  async startScanning(): Promise<void> {
+    console.log(`\n${'*'.repeat(80)}`);
+    console.log(`🚀 startScanning() called - Current state: isScanning=${this.isScanning}`);
+    console.log(`${'*'.repeat(80)}`);
 
-    this.isScanning = true;
-    const intervalSeconds = this.config.scanning.backfillInterval / 1000;
-    console.log(`🔄 Starting continuous backfill-based signal detection every ${intervalSeconds} seconds...`);
-
-    // Initial scan for gap stocks
-    this.scanForGappers();
-
-    // Start immediate backfill, then continue on interval
-    this.scheduleNextBackfill();
-  }
-
-  // Schedule backfill to run on regular intervals
-  private scheduleNextBackfill(): void {
-    const intervalMs = this.config.scanning.backfillInterval;
-
-    if (this.config.development.enableDebugLogging) {
-      console.log(`📅 Backfill interval set to ${intervalMs/1000} seconds`);
+    if (this.isScanning) {
+      console.log(`⚠️  Scanner is already running - ignoring duplicate start request`);
+      return;
     }
 
-    // Perform initial backfill immediately
-    setTimeout(() => {
-      this.performScheduledBackfill();
-    }, 2000); // Small delay to let initialization complete
+    this.isScanning = true;
+    console.log(`✅ isScanning flag set to TRUE`);
+    console.log(`📋 Market Hours: ${this.config.marketHours.startTime} - ${this.config.marketHours.endTime} ET`);
 
-    // Set up regular interval
-    this.scanInterval = window.setInterval(() => {
+    // Initial scan for gap stocks
+    console.log(`📊 Performing initial gap stock scan...`);
+    const gapStocks = await this.scanForGappers();
+
+    // Check if we should use WebSocket (during regular market hours)
+    const now = this.getCurrentTime();
+    const etHour = this.getETHour(now);
+
+    // Parse endTime from config to get max hour
+    const [endHour, endMin] = this.config.marketHours.endTime.split(':').map(Number);
+    const maxETHour = endHour + endMin / 60;
+
+    const useWebSocketScanning = this.useWebSocket &&
+                                  this.webSocketScanner &&
+                                  etHour >= 9.5 &&
+                                  etHour <= maxETHour &&
+                                  gapStocks.length > 0;
+
+    if (useWebSocketScanning) {
+      console.log(`🔌 Using WEBSOCKET mode for real-time scanning`);
+      console.log(`   Symbols: ${gapStocks.length}`);
+
+      try {
+        // Register alert callback with WebSocket scanner
+        this.webSocketScanner!.onAlert((alert: Alert) => {
+          console.log(`📨 WebSocket alert received: ${alert.symbol} ${alert.type}`);
+          this.fireAlert(alert);
+        });
+
+        // Connect to WebSocket with current symbols
+        const symbolsData = gapStocks.map(stock => ({
+          symbol: stock.symbol,
+          gapPercent: stock.gapPercent,
+          previousClose: stock.previousClose,
+          currentPrice: stock.currentPrice
+        }));
+
+        await this.webSocketScanner!.connect(symbolsData);
+        console.log(`✅ WebSocket scanner connected and streaming`);
+
+        // Set up periodic symbol list updates (every 2 minutes)
+        this.scanInterval = window.setInterval(async () => {
+          console.log(`\n🔄 Updating WebSocket watchlist...`);
+          const updatedStocks = await this.scanForGappers();
+          const updatedData = updatedStocks.map(stock => ({
+            symbol: stock.symbol,
+            gapPercent: stock.gapPercent,
+            previousClose: stock.previousClose,
+            currentPrice: stock.currentPrice
+          }));
+          await this.webSocketScanner!.updateSymbols(updatedData);
+        }, 120000); // 2 minutes
+
+      } catch (error) {
+        console.error('❌ Failed to start WebSocket scanner:', error);
+        console.log('⚠️  Falling back to polling mode...');
+        // Fall back to polling
+        this.scheduleNextBackfill();
+      }
+
+    } else {
+      console.log(`📡 Using POLLING mode for scanning`);
+      console.log(`   Reason: ${!this.useWebSocket ? 'WebSocket disabled' :
+                                  !this.webSocketScanner ? 'No WebSocket scanner' :
+                                  gapStocks.length === 0 ? 'No qualifying stocks' :
+                                  'Outside regular hours'}`);
+
+      // Start immediate backfill, then continue on interval
+      console.log(`⏰ Scheduling first backfill run...`);
+      this.scheduleNextBackfill();
+    }
+
+    console.log(`${'*'.repeat(80)}`);
+    console.log(`✅ Scanner started successfully`);
+    console.log(`${'*'.repeat(80)}\n`);
+  }
+
+  // Schedule backfill to run aligned with 5-minute candle boundaries
+  private scheduleNextBackfill(): void {
+    console.log(`📅 scheduleNextBackfill() - Setting up smart backfill scheduling`);
+    console.log(`   Strategy: Aligned to 5-minute candle closes + 1 second delay`);
+
+    // Perform initial backfill after short delay to let initialization complete
+    const initialDelay = 2000; // 2 seconds
+    console.log(`   Scheduling initial backfill in ${initialDelay}ms...`);
+    setTimeout(() => {
+      console.log(`⏰ Initial backfill delay complete - starting first scan now`);
       this.performScheduledBackfill();
-    }, intervalMs);
+    }, initialDelay);
+  }
+
+  // Calculate milliseconds until next 5-minute boundary + 1 second
+  private getMillisecondsUntilNext5MinBoundary(): number {
+    const now = new Date();
+    const etTime = new Date(now.toLocaleString("en-US", {timeZone: "America/New_York"}));
+
+    const currentMinutes = etTime.getMinutes();
+    const currentSeconds = etTime.getSeconds();
+    const currentMilliseconds = etTime.getMilliseconds();
+
+    // Calculate minutes until next 5-minute boundary
+    const minutesTo5MinBoundary = 5 - (currentMinutes % 5);
+    const secondsUntilBoundary = minutesTo5MinBoundary === 5 && currentSeconds === 0 && currentMilliseconds === 0
+      ? 0  // We're exactly at a boundary
+      : (minutesTo5MinBoundary * 60) - currentSeconds;
+
+    // Add 15 second delay after the boundary to ensure Polygon has published the completed candle
+    // Polygon needs time to aggregate and publish 5-minute bar data after the candle closes
+    const delayAfterBoundaryMs = 15000; // 15 seconds = 15000ms
+    const msUntilBoundary = (secondsUntilBoundary * 1000) - currentMilliseconds;
+    const msUntilScan = msUntilBoundary + delayAfterBoundaryMs;
+
+    // If we're very close to a scan time, schedule for next boundary instead
+    if (msUntilScan < 500) {
+      return msUntilScan + (5 * 60 * 1000); // Add 5 minutes
+    }
+
+    return msUntilScan;
   }
 
   // Perform backfill on schedule
   private async performScheduledBackfill(): Promise<void> {
+    console.log(`\n${'='.repeat(80)}`);
+    console.log(`🔄 performScheduledBackfill() START - isScanning=${this.isScanning}`);
+    console.log(`${'='.repeat(80)}`);
+
     try {
       const now = this.getCurrentTime();
 
       // Only scan during configured market hours
       if (this.isWithinMarketHours(now)) {
-        console.log(`🔄 Running scheduled backfill at ${this.formatETTime(now)}...`);
+        console.log(`✅ Within market hours - proceeding with backfill at ${this.formatETTime(now)}...`);
         if (this.config.development.enableDebugLogging) {
           console.log(`   Checking for new pattern signals since last scan`);
         }
 
         // Update gap stocks first
+        console.log(`📊 Step 1: Updating gap stocks list...`);
         await this.scanForGappers();
+        console.log(`   ✅ Gap stocks updated`);
 
         // Perform backfill to get latest signals
+        console.log(`📊 Step 2: Performing continuous backfill...`);
         await this.performContinuousBackfill();
+        console.log(`   ✅ Continuous backfill complete`);
+
+        // Schedule next backfill aligned to next 5-minute boundary
+        const msUntilNext = this.getMillisecondsUntilNext5MinBoundary();
+        const nextScanTime = new Date(Date.now() + msUntilNext);
+        const etNextScan = new Date(nextScanTime.toLocaleString("en-US", {timeZone: "America/New_York"}));
+
+        console.log(`⏰ SCHEDULING NEXT SCAN: ${etNextScan.toLocaleTimeString('en-US', {timeZone: 'America/New_York'})} ET (in ${(msUntilNext/1000).toFixed(0)}s)`);
+
+        // Clear any existing timeout and schedule the next one
+        if (this.scanInterval) {
+          clearTimeout(this.scanInterval);
+          console.log(`   🗑️  Cleared existing timeout`);
+        }
+        this.scanInterval = window.setTimeout(() => {
+          console.log(`\n⏰ TIMEOUT FIRED - Executing scheduled backfill now`);
+          this.performScheduledBackfill();
+        }, msUntilNext);
+        console.log(`   ✅ Next scan scheduled (timeout ID: ${this.scanInterval})`);
+
       } else {
         // AUTO-STOP: When outside market hours, stop the scanner automatically
+        console.log(`❌ OUTSIDE MARKET HOURS at ${this.formatETTime(now)}`);
         if (this.isScanning) {
-          console.log(`🛑 MARKET HOURS ENDED: Automatically stopping scanner at ${this.formatETTime(now)}`);
+          console.log(`🛑 Automatically stopping scanner...`);
           this.stopScanning();
-        } else if (this.config.development.enableDebugLogging) {
-          console.log(`🕐 Outside market hours at ${this.formatETTime(now)} - scanner already stopped`);
+        } else {
+          console.log(`ℹ️  Scanner already stopped`);
         }
       }
     } catch (error) {
-      console.error('Error in scheduled backfill:', error);
+      console.error('❌ ERROR in scheduled backfill:', error);
+      console.error('   Stack trace:', error);
+
+      // Even on error, schedule next scan
+      if (this.isScanning && this.isWithinMarketHours(this.getCurrentTime())) {
+        const msUntilNext = this.getMillisecondsUntilNext5MinBoundary();
+        console.log(`⚠️  RECOVERY: Scheduling next scan despite error (in ${(msUntilNext/1000).toFixed(0)}s)`);
+        if (this.scanInterval) {
+          clearTimeout(this.scanInterval);
+        }
+        this.scanInterval = window.setTimeout(() => {
+          console.log(`\n⏰ RECOVERY TIMEOUT FIRED - Retrying backfill`);
+          this.performScheduledBackfill();
+        }, msUntilNext);
+        console.log(`   ✅ Recovery scan scheduled (timeout ID: ${this.scanInterval})`);
+      } else {
+        console.log(`❌ NOT RESCHEDULING: isScanning=${this.isScanning}, withinMarketHours=${this.isWithinMarketHours(this.getCurrentTime())}`);
+      }
     }
+
+    console.log(`${'='.repeat(80)}`);
+    console.log(`🔄 performScheduledBackfill() END`);
+    console.log(`${'='.repeat(80)}\n`);
   }
 
   // Perform continuous backfill and fire new alerts with sound notifications
@@ -911,12 +1078,25 @@ export class GapScanner {
 
   // Stop scanning
   stopScanning(): void {
-    if (this.scanInterval) {
-      clearInterval(this.scanInterval);
-      this.scanInterval = null;
+    console.log(`🛑 stopScanning() called - Current state: isScanning=${this.isScanning}, hasInterval=${!!this.scanInterval}`);
+
+    // Stop WebSocket scanner if running
+    if (this.webSocketScanner && this.webSocketScanner.getConnectionStatus()) {
+      console.log('   🔌 Disconnecting WebSocket scanner...');
+      this.webSocketScanner.disconnect();
+      console.log('   ✅ WebSocket scanner disconnected');
     }
+
+    // Clear polling interval/timeout
+    if (this.scanInterval) {
+      clearTimeout(this.scanInterval);
+      clearInterval(this.scanInterval); // Also try clearing as interval in case it was set that way
+      this.scanInterval = null;
+      console.log('   ✅ Cleared scheduled timeout/interval');
+    }
+
     this.isScanning = false;
-    console.log('Gap stock scanner stopped');
+    console.log('   ✅ Gap stock scanner stopped');
   }
 
   // Get current qualified symbols
@@ -937,9 +1117,22 @@ export class GapScanner {
     }));
   }
 
-  // Register alert callback
-  onAlert(callback: (alert: Alert) => void): void {
+  // Register alert callback - returns unsubscribe function
+  onAlert(callback: (alert: Alert) => void): () => void {
+    console.log(`📝 onAlert() - Registering new alert callback`);
+    console.log(`   Callbacks before: ${this.alertCallbacks.length}`);
     this.alertCallbacks.push(callback);
+    console.log(`   Callbacks after: ${this.alertCallbacks.length}`);
+    console.log(`   ✅ Alert callback registered successfully`);
+
+    // Return unsubscribe function
+    return () => {
+      const index = this.alertCallbacks.indexOf(callback);
+      if (index > -1) {
+        this.alertCallbacks.splice(index, 1);
+        console.log(`🗑️  Alert callback removed (remaining: ${this.alertCallbacks.length})`);
+      }
+    };
   }
 
   // Public method to clear cache when configuration changes
@@ -956,33 +1149,48 @@ export class GapScanner {
 
   // Fire alert to all callbacks with proper deduplication
   public fireAlert(alert: Alert): void {
+    console.log(`\n🔔 fireAlert() called for ${alert.symbol} ${alert.type}`);
+    console.log(`   Alert ID: ${alert.id}`);
+    console.log(`   Alert Time: ${new Date(alert.timestamp).toLocaleTimeString()}`);
+    console.log(`   Registered callbacks: ${this.alertCallbacks.length}`);
+    console.log(`   Already fired? ${this.firedAlertIds.has(alert.id)}`);
+
     // Check if we've already fired this specific alert
     if (this.firedAlertIds.has(alert.id)) {
-      console.log(`⏭️  Skipping duplicate alert: ${alert.symbol} ${alert.type} (ID: ${alert.id})`);
+      console.log(`⏭️  SKIPPING: Alert already fired previously`);
       return; // Skip duplicate alert
     }
 
     // Mark alert as fired
     this.firedAlertIds.add(alert.id);
+    console.log(`✅ Alert marked as fired (total fired: ${this.firedAlertIds.size})`);
 
     // Clean up old alert IDs to prevent memory leak (keep last 1000)
     if (this.firedAlertIds.size > 1000) {
       const alertIds = Array.from(this.firedAlertIds);
       const oldIds = alertIds.slice(0, alertIds.length - 500); // Remove oldest 500
       oldIds.forEach(id => this.firedAlertIds.delete(id));
+      console.log(`🗑️  Cleaned up ${oldIds.length} old alert IDs`);
     }
 
-    console.log(`🔔 FIRING ALERT: ${alert.type} for ${alert.symbol} at ${new Date(alert.timestamp).toLocaleTimeString()} (${this.alertCallbacks.length} callbacks registered)`);
+    console.log(`🔔 FIRING ALERT to ${this.alertCallbacks.length} callback(s)...`);
 
     // Fire alert to all callbacks
     this.alertCallbacks.forEach((callback, index) => {
       try {
+        console.log(`   📞 Calling callback ${index + 1}...`);
         callback(alert);
-        console.log(`   ✅ Callback ${index + 1} executed successfully`);
+        console.log(`   ✅ Callback ${index + 1} completed successfully`);
       } catch (error) {
-        console.error(`   ❌ Error in callback ${index + 1}:`, error);
+        console.error(`   ❌ ERROR in callback ${index + 1}:`, error);
       }
     });
+
+    if (this.alertCallbacks.length === 0) {
+      console.warn(`⚠️  WARNING: No callbacks registered! Alert will not be delivered to UI.`);
+    }
+
+    console.log(`🔔 fireAlert() complete\n`);
   }
 
   // Scan for live patterns during premarket hours
@@ -1374,6 +1582,7 @@ export class GapScanner {
         const patterns = [
           this.detectToppingTail5m(symbol, bars5m, index, currentHOD, barTimestamp, cumulativeVolumeUpToNow, gapPercent),
           this.detectGreenRunReject(symbol, bars5m, index, currentHOD, barTimestamp, cumulativeVolumeUpToNow, gapPercent),
+          this.detectTestSignal(symbol, bars5m, index, currentHOD, barTimestamp, cumulativeVolumeUpToNow, gapPercent),
         ];
 
 
@@ -2145,6 +2354,50 @@ export class GapScanner {
       type: 'GreenRunReject',
       detail: `${consecutiveGreen} green 5m candles (+${totalGainPercent.toFixed(1)}%) near HOD (${distanceFromHOD.toFixed(1)}% from HOD), red rejection at ${currentBar.c.toFixed(2)}`,
       price: currentBar.c,
+      volume: alertVolume,
+      gapPercent: gapPercent,
+      historical: true
+    };
+  }
+
+  private detectTestSignal(symbol: string, bars5m: PolygonBar[], index: number, hod: number, timestamp: Date, cumulativeVolume?: number, gapPercent?: number): Alert | null {
+    // Simple test signal to verify scanner is working
+    // Fires on every new 5-minute candle for stocks meeting basic requirements
+
+    // Check if test signals are enabled
+    if (!this.config.development.enableTestSignal) {
+      return null;
+    }
+
+    const bar = bars5m[index];
+
+    // Basic validation: ensure bar exists and has valid data
+    if (!bar || bar.c <= 0 || bar.v <= 0) {
+      return null;
+    }
+
+    // Verify this is a properly aligned 5-minute bar
+    const barTime = new Date(bar.t);
+    const etBarTime = new Date(barTime.toLocaleString("en-US", {timeZone: "America/New_York"}));
+    const minutes = etBarTime.getMinutes();
+    const seconds = etBarTime.getSeconds();
+    const isProperlyAligned = minutes % 5 === 0 && seconds === 0;
+
+    if (!isProperlyAligned) {
+      return null;
+    }
+
+    const alertVolume = cumulativeVolume || bar.v;
+
+    console.log(`🧪 TEST SIGNAL: ${symbol} at ${this.formatETTime(timestamp)} - New 5m candle detected | Price: $${bar.c.toFixed(2)} | Volume: ${(alertVolume/1000).toFixed(1)}k`);
+
+    return {
+      id: `${symbol}-${timestamp.getTime()}-${index}-TestSignal`,
+      timestamp: timestamp.getTime(),
+      symbol,
+      type: 'TestSignal',
+      detail: `Test signal - New 5m candle at ${this.formatETTime(timestamp)} | O:${bar.o.toFixed(2)} H:${bar.h.toFixed(2)} L:${bar.l.toFixed(2)} C:${bar.c.toFixed(2)}`,
+      price: bar.c,
       volume: alertVolume,
       gapPercent: gapPercent,
       historical: true

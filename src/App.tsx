@@ -6,6 +6,7 @@ import Backtesting from './components/Backtesting';
 import { Alert } from './types';
 import { GapScanner } from './services/GapScanner';
 import { getScannerConfig } from './config/scannerConfig';
+import { soundService } from './services/SoundService';
 
 // Performance constants
 const MAX_ALERTS_IN_MEMORY = 100; // Limit memory usage
@@ -25,12 +26,39 @@ function App() {
   const [soundAlertsEnabled, setSoundAlertsEnabled] = useState(false);
   const [selectedSound, setSelectedSound] = useState('alert');
 
+  // Test function to manually add an alert
+  const addTestAlert = useCallback(() => {
+    console.log('🧪 TEST BUTTON CLICKED - Manually adding alert');
+    const testAlert: Alert = {
+      id: `TEST-${Date.now()}`,
+      symbol: 'TEST',
+      type: 'TestSignal',
+      timestamp: Date.now(),
+      price: 99.99,
+      volume: 100000,
+      detail: 'Manual test alert from button',
+      gapPercent: 50.0
+    };
+
+    setAlerts(prev => {
+      console.log(`   🧪 Manual add: prev.length = ${prev.length}`);
+      const newAlerts = [...prev, testAlert];
+      console.log(`   🧪 Manual add: new length = ${newAlerts.length}`);
+      return newAlerts;
+    });
+
+    console.log('   🧪 Manual setAlerts called');
+  }, []);
+
   // Enable/disable sound service when sound alerts toggle
   useEffect(() => {
     const enableSoundService = async () => {
       if (soundAlertsEnabled) {
-        const { soundService } = await import('./services/SoundService');
         await soundService.enableAudio();
+        console.log('🔊 Sound service enabled');
+      } else {
+        soundService.disableAudio();
+        console.log('🔇 Sound service disabled');
       }
     };
     enableSoundService();
@@ -38,26 +66,54 @@ function App() {
 
   // Real gap stock scanner with configurable timeframe
   useEffect(() => {
+    let unsubscribe: (() => void) | null = null;
+
     const initializeScanner = async () => {
       try {
         console.log('Initializing Gap Scanner...');
         setIsConnected(true);
 
         // Set up alert callback FIRST (before any scanning starts)
-        gapScanner.onAlert((alert: Alert) => {
-          console.log(`📨 Received new alert: ${alert.symbol} ${alert.type} at ${new Date(alert.timestamp).toLocaleTimeString()}`);
-          setAlerts(prev => {
-            const newAlerts = [...prev, alert];
-            // Keep only the most recent alerts to prevent memory issues
-            return newAlerts.length > MAX_ALERTS_IN_MEMORY
-              ? newAlerts.slice(-MAX_ALERTS_IN_MEMORY)
-              : newAlerts;
-          });
-          setStats(prev => ({
-            ...prev,
-            totalAlerts: prev.totalAlerts + 1,
-            lastUpdate: new Date().toLocaleTimeString()
-          }));
+        unsubscribe = gapScanner.onAlert((alert: Alert) => {
+          console.log(`\n${'🚨'.repeat(30)}`);
+          console.log(`📨 APP.TSX CALLBACK RECEIVED: ${alert.symbol} ${alert.type} at ${new Date(alert.timestamp).toLocaleTimeString()}`);
+          console.log(`   Alert ID: ${alert.id}`);
+          console.log(`   Alert Price: $${alert.price}`);
+
+          try {
+            // Use functional update to ensure we have latest state
+            setAlerts(prev => {
+              console.log(`   🔍 INSIDE setAlerts callback - current state has ${prev.length} alerts`);
+
+              // Check for duplicate
+              const isDuplicate = prev.some(a => a.id === alert.id);
+              if (isDuplicate) {
+                console.log(`   ⚠️  Duplicate alert detected, skipping: ${alert.id}`);
+                return prev; // Return same reference to prevent re-render
+              }
+
+              console.log(`   ➕ Adding new alert to state...`);
+              const newAlerts = [...prev, alert];
+              const result = newAlerts.length > MAX_ALERTS_IN_MEMORY
+                ? newAlerts.slice(-MAX_ALERTS_IN_MEMORY)
+                : newAlerts;
+
+              console.log(`   ✅ Returning ${result.length} alerts to React (was ${prev.length})`);
+              console.log(`   📊 New alert added: ${alert.symbol} ${alert.type}`);
+              return result;
+            });
+
+            setStats(prev => ({
+              ...prev,
+              totalAlerts: prev.totalAlerts + 1,
+              lastUpdate: new Date().toLocaleTimeString()
+            }));
+
+            console.log(`   ✅ State update functions queued`);
+          } catch (error) {
+            console.error(`   ❌ ERROR in state update:`, error);
+          }
+          console.log(`${'🚨'.repeat(30)}\n`);
         });
 
         // Backfill historical data if accessing after configured start time
@@ -93,11 +149,11 @@ function App() {
 
         console.log(`Tracking ${gapSymbols.length} gap stocks: ${gapSymbols.join(', ')}`);
 
-        // Start continuous scanning (will run every 10 seconds)
+        // Start continuous scanning
         console.log('Starting continuous gap scanner...');
         try {
-          gapScanner.startScanning();
-          console.log('✅ Scanner started - will check for new signals every 10 seconds');
+          await gapScanner.startScanning();
+          console.log('✅ Scanner started successfully');
         } catch (error) {
           console.warn('Scanner start failed:', error);
         }
@@ -143,8 +199,10 @@ function App() {
 
     // Cleanup
     return () => {
+      console.log('🧹 Cleaning up scanner...');
       clearInterval(symbolUpdateInterval);
       clearTimeout(updateTimeout);
+      if (unsubscribe) unsubscribe(); // Remove alert callback
       gapScanner.stopScanning();
     };
   }, [gapScanner]);
@@ -187,6 +245,22 @@ function App() {
   return (
     <div className="App">
       <div className="app-controls">
+        <button
+          onClick={addTestAlert}
+          style={{
+            padding: '10px 20px',
+            backgroundColor: '#ff6b6b',
+            color: 'white',
+            border: 'none',
+            borderRadius: '5px',
+            cursor: 'pointer',
+            fontWeight: 'bold',
+            marginRight: '10px'
+          }}
+        >
+          🧪 TEST ADD ALERT
+        </button>
+
         <div className="layout-toggle" role="tablist" aria-label="Layout view options">
           <button
             className={`toggle-btn ${layoutMode === 'hodbreak' ? 'active' : ''}`}
@@ -270,10 +344,7 @@ function App() {
               <button
                 className="sound-preview-btn"
                 onClick={() => {
-                  // Import and use sound service for preview
-                  import('./services/SoundService').then(({ soundService }) => {
-                    soundService.previewSound(selectedSound);
-                  });
+                  soundService.previewSound(selectedSound);
                 }}
                 title="Preview selected sound"
               >

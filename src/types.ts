@@ -1,4 +1,4 @@
-export type PatternType = 'HODBreakCloseUnder' | 'ToppingTail1m' | 'ToppingTail5m' | 'GreenRunReject';
+export type PatternType = 'HODBreakCloseUnder' | 'ToppingTail1m' | 'ToppingTail5m' | 'GreenRunReject' | 'TestSignal';
 
 export interface Alert {
   id: string;

@@ -52,6 +52,7 @@ export const createCustomScanner = () => {
     development: {
       enableDebugLogging: true,
       overrideCurrentTime: null, // Can set to "2024-09-25T14:00:00.000Z" for testing
+      enableTestSignal: false, // Set to true to enable test signals for scanner verification
     }
   };
 

@@ -185,7 +185,10 @@ export interface ScannerConfig {
   // Scanning Behavior
   scanning: {
     // How often to backfill for new signals (in milliseconds)
-    backfillInterval: number; // 10000 = 10 seconds for responsive real-time updates
+    // NOTE: The scanner now uses smart scheduling aligned to 5-minute candle boundaries
+    // This config value is kept for compatibility but the actual scanning is optimized
+    // to run 1 second after each 5-minute interval (9:30:01, 9:35:01, 9:40:01, etc.)
+    backfillInterval: number; // 10000 = 10 seconds (legacy - now uses smart 5-min alignment + 1s)
 
     // Bid/ask spread for symbol data display
     bidAskSpread: number; // 0.01
@@ -210,6 +213,11 @@ export interface ScannerConfig {
 
     // Override current time for testing (ISO string or null)
     overrideCurrentTime: string | null; // "2024-09-25T14:00:00.000Z"
+
+    // Enable test signal (fires on every new 5-minute candle for qualifying stocks)
+    // Use this to verify the scanner is working and alerts are firing automatically
+    // WARNING: This will generate MANY test alerts - only use for testing!
+    enableTestSignal: boolean; // false = disabled, true = enabled
   };
 }
 
@@ -222,7 +230,7 @@ export interface ScannerConfig {
 export const defaultScannerConfig: ScannerConfig = {
   marketHours: {
     startTime: '09:30',
-    endTime: '16:00',
+    endTime: '18:00',
     timezone: 'America/New_York',
   },
 
@@ -294,7 +302,7 @@ export const defaultScannerConfig: ScannerConfig = {
   },
 
   scanning: {
-    backfillInterval: 10000, // Check for new signals every 10 seconds
+    backfillInterval: 10000, // Legacy config - now uses smart 5-min candle alignment
     bidAskSpread: 0.01,
   },
 
@@ -307,6 +315,7 @@ export const defaultScannerConfig: ScannerConfig = {
   development: {
     enableDebugLogging: true,
     overrideCurrentTime: null,
+    enableTestSignal: true, // Set to true to test scanner/alert functionality
   },
 };
 
@@ -465,7 +474,7 @@ export const exampleConfigs = {
     marketHours: {
       ...defaultScannerConfig.marketHours,
       startTime: '04:00', // 4:00 AM ET (premarket start)
-      endTime: '16:00', // 4:00 PM ET (market close)
+      endTime: '20:00', // 8:00 PM ET (extended for after-hours testing)
     },
     gapCriteria: {
       ...defaultScannerConfig.gapCriteria,

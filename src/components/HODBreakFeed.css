@@ -537,6 +537,11 @@
   color: #ffffff;
 }
 
+.pattern-badge-test {
+  background: linear-gradient(135deg, #ffc107 0%, #e0a800 100%);
+  color: #1a1a1a;
+}
+
 .price-section {
   display: flex;
   flex-direction: column;

@@ -1,0 +1,12 @@
+Check these console logs when the alert fires:
+
+1. After "Already fired? false", you should see:
+   - "✅ Alert marked as fired"
+   - "🔔 FIRING ALERT to X callback(s)..."
+   - "📞 Calling callback 1..."
+   - "✅ Callback 1 completed successfully"
+   - "📨 Received new alert: ..." (from App.tsx)
+
+2. If you DON'T see these logs, the fireAlert function is failing silently.
+
+Please check your browser console for the COMPLETE output.

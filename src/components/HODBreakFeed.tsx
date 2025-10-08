@@ -26,14 +26,16 @@ const HODBreakFeed: React.FC<HODBreakFeedProps> = ({
   stats,
   symbols = []
 }) => {
+  console.log(`🔄 HODBreakFeed RENDER: ${alerts.length} alerts received as props`);
   const [sortBy, setSortBy] = useState<'time' | 'price' | 'volume' | 'gap'>('time');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
   const [symbolFilter, setSymbolFilter] = useState('');
   const [priceRange, setPriceRange] = useState({ min: '', max: '' });
   const [showFilters, setShowFilters] = useState(false);
-  const [patternFilter, setPatternFilter] = useState<'all' | 'ToppingTail5m' | 'GreenRunReject'>('all');
+  const [patternFilter, setPatternFilter] = useState<'all' | 'ToppingTail5m' | 'GreenRunReject' | 'TestSignal'>('all');
   const [showSymbols, setShowSymbols] = useState(false);
   const prevAlertsLength = useRef(0);
+  const prevAlertIds = useRef(new Set<string>());
 
   // Filter and deduplicate all pattern types
   const filteredAlerts = useMemo(() => {
@@ -113,6 +115,8 @@ const HODBreakFeed: React.FC<HODBreakFeedProps> = ({
         return '5-Minute Topping Tail';
       case 'GreenRunReject':
         return 'Green Run Rejection';
+      case 'TestSignal':
+        return 'Test Signal';
       default:
         return type;
     }
@@ -121,17 +125,30 @@ const HODBreakFeed: React.FC<HODBreakFeedProps> = ({
   // Sound and voice alerts for new signals
   useEffect(() => {
     const newAlertCount = filteredAlerts.length;
-    if (newAlertCount > prevAlertsLength.current && newAlertCount > 0) {
-      const newAlerts = filteredAlerts.slice(prevAlertsLength.current);
+    console.log(`🎵 HODBreakFeed useEffect: newAlertCount=${newAlertCount}, prevCount=${prevAlertsLength.current}`);
+
+    // Detect NEW alerts by ID, not just by count (handles max limit case)
+    const currentIds = new Set(filteredAlerts.map(a => a.id));
+    const newAlerts = filteredAlerts.filter(alert => !prevAlertIds.current.has(alert.id));
+
+    console.log(`   🆔 Current IDs: ${currentIds.size}, Previous IDs: ${prevAlertIds.current.size}, New alerts: ${newAlerts.length}`);
+
+    if (newAlerts.length > 0) {
+      console.log(`   🔔 Processing ${newAlerts.length} new alerts for sound/voice`);
 
       newAlerts.forEach(async (newAlert) => {
         // Play sound alert immediately if enabled
         if (soundAlertsEnabled && selectedSound !== 'none') {
           try {
+            console.log(`   🔊 Attempting to play sound: ${selectedSound}`);
+            console.log(`   🔊 Sound service enabled: ${soundService.isEnabled()}`);
             await soundService.playSound(selectedSound);
+            console.log(`   ✅ Sound played successfully`);
           } catch (error) {
-            console.warn('Sound alert failed:', error);
+            console.error('   ❌ Sound alert failed:', error);
           }
+        } else {
+          console.log(`   ⏭️  Sound skipped: soundAlertsEnabled=${soundAlertsEnabled}, selectedSound=${selectedSound}`);
         }
 
         // Play voice alert if enabled
@@ -157,6 +174,9 @@ const HODBreakFeed: React.FC<HODBreakFeedProps> = ({
           });
         }
       });
+
+      // Update the previous IDs set
+      prevAlertIds.current = currentIds;
     }
     prevAlertsLength.current = newAlertCount;
   }, [filteredAlerts, voiceAlertsEnabled, soundAlertsEnabled, selectedSound]);
@@ -178,6 +198,8 @@ const HODBreakFeed: React.FC<HODBreakFeedProps> = ({
         return 'pattern-badge-5m';
       case 'GreenRunReject':
         return 'pattern-badge-green';
+      case 'TestSignal':
+        return 'pattern-badge-test';
       default:
         return 'pattern-badge';
     }
@@ -194,6 +216,8 @@ const HODBreakFeed: React.FC<HODBreakFeedProps> = ({
         return 'TOPPING TAIL 5M';
       case 'GreenRunReject':
         return 'GREEN RUN REJECT';
+      case 'TestSignal':
+        return 'TEST SIGNAL';
       default:
         return type;
     }
@@ -331,6 +355,7 @@ const HODBreakFeed: React.FC<HODBreakFeedProps> = ({
                 <option value="all">All Patterns</option>
                 <option value="ToppingTail5m">5m Topping Tail</option>
                 <option value="GreenRunReject">Green Run Rejection</option>
+                <option value="TestSignal">Test Signal</option>
               </select>
             </div>
             <div className="filter-group">
@@ -489,4 +514,5 @@ const HODBreakFeed: React.FC<HODBreakFeedProps> = ({
   );
 };
 
-export default memo(HODBreakFeed);
+// Export without memo to ensure immediate re-renders during debugging
+export default HODBreakFeed;
