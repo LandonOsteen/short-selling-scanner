@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, memo, useMemo, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useMemo, useState, useCallback } from 'react';
 import './HODBreakFeed.css';
 import { Alert } from '../types';
 import { soundService } from '../services/SoundService';
@@ -26,7 +26,6 @@ const HODBreakFeed: React.FC<HODBreakFeedProps> = ({
   stats,
   symbols = []
 }) => {
-  console.log(`🔄 HODBreakFeed RENDER: ${alerts.length} alerts received as props`);
   const [sortBy, setSortBy] = useState<'time' | 'price' | 'volume' | 'gap'>('time');
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
   const [symbolFilter, setSymbolFilter] = useState('');
@@ -125,30 +124,20 @@ const HODBreakFeed: React.FC<HODBreakFeedProps> = ({
   // Sound and voice alerts for new signals
   useEffect(() => {
     const newAlertCount = filteredAlerts.length;
-    console.log(`🎵 HODBreakFeed useEffect: newAlertCount=${newAlertCount}, prevCount=${prevAlertsLength.current}`);
 
     // Detect NEW alerts by ID, not just by count (handles max limit case)
     const currentIds = new Set(filteredAlerts.map(a => a.id));
     const newAlerts = filteredAlerts.filter(alert => !prevAlertIds.current.has(alert.id));
 
-    console.log(`   🆔 Current IDs: ${currentIds.size}, Previous IDs: ${prevAlertIds.current.size}, New alerts: ${newAlerts.length}`);
-
     if (newAlerts.length > 0) {
-      console.log(`   🔔 Processing ${newAlerts.length} new alerts for sound/voice`);
-
       newAlerts.forEach(async (newAlert) => {
         // Play sound alert immediately if enabled
         if (soundAlertsEnabled && selectedSound !== 'none') {
           try {
-            console.log(`   🔊 Attempting to play sound: ${selectedSound}`);
-            console.log(`   🔊 Sound service enabled: ${soundService.isEnabled()}`);
             await soundService.playSound(selectedSound);
-            console.log(`   ✅ Sound played successfully`);
           } catch (error) {
-            console.error('   ❌ Sound alert failed:', error);
+            console.error('Sound alert failed:', error);
           }
-        } else {
-          console.log(`   ⏭️  Sound skipped: soundAlertsEnabled=${soundAlertsEnabled}, selectedSound=${selectedSound}`);
         }
 
         // Play voice alert if enabled

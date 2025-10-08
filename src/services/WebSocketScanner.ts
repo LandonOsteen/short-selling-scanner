@@ -5,7 +5,7 @@
  * builds 5-minute candles, and detects patterns as they form.
  */
 
-import { Alert, PatternType, BarData } from '../types';
+import { Alert, BarData } from '../types';
 import { ScannerConfig } from '../config/scannerConfig';
 
 interface PolygonMinuteAggregate {
@@ -414,8 +414,14 @@ export class WebSocketScanner {
     // Sort by timestamp to ensure correct order
     const sorted = candles.sort((a, b) => a.timestamp - b.timestamp);
 
+    // Use the close time (last candle's timestamp + 1 minute) as the candle timestamp
+    // This represents when the period actually closes
+    // For 16:30-16:34 period, timestamp will be 16:35:00
+    const closeTime = new Date(sorted[sorted.length - 1].timestamp);
+    closeTime.setMinutes(closeTime.getMinutes() + 1);
+
     return {
-      timestamp: sorted[0].timestamp, // Use first candle's timestamp
+      timestamp: closeTime.getTime(), // Use close time of the period
       open: sorted[0].open,           // Open from first candle
       high: Math.max(...sorted.map(c => c.high)),  // Highest high
       low: Math.min(...sorted.map(c => c.low)),    // Lowest low
