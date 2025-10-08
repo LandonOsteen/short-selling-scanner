@@ -1,7 +1,8 @@
-import React, { useState, useCallback, memo } from 'react';
+import React, { useState, useCallback, memo, useMemo } from 'react';
 import './Backtesting.css';
 import { Alert, PatternType } from '../types';
 import { GapScanner } from '../services/GapScanner';
+import { getScannerConfig } from '../config/scannerConfig';
 
 interface BacktestingProps {
   gapScanner: GapScanner;
@@ -14,14 +15,16 @@ interface Trade {
   strategy: PatternType;
   entryTime: string;
   entryPrice: number;
-  exitPrice: number; // Market open price
+  exitPrice: number;
+  exitTime: string; // Time of exit
+  exitStrategy: 'marketOpen' | 'firstGreen5m'; // How we exited
   pnl: number;
   pnlPercent: number;
   isWin: boolean;
   signalDetail: string;
   volume: number;
   gapPercent: number;
-  minutesToOpen: number;
+  minutesToExit: number; // Time held in minutes
 }
 
 interface BacktestResults {
@@ -41,9 +44,8 @@ interface BacktestResults {
 
 const STRATEGIES = [
   { value: 'all', label: 'All Strategies' },
-  { value: 'ToppingTail1m', label: 'Topping Tail 1m' },
-  { value: 'HODBreakCloseUnder', label: 'HOD Break Close Under' },
-  { value: 'Run4PlusGreenThenRed', label: '4+ Green Then Red' },
+  { value: 'ToppingTail5m', label: '5-Minute Topping Tail' },
+  { value: 'GreenRunReject', label: 'Green Run Rejection' },
 ] as const;
 
 const Backtesting: React.FC<BacktestingProps> = ({ gapScanner }) => {
@@ -53,6 +55,16 @@ const Backtesting: React.FC<BacktestingProps> = ({ gapScanner }) => {
   const [isRunning, setIsRunning] = useState(false);
   const [results, setResults] = useState<BacktestResults | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Exit strategy: 'marketOpen' or 'firstGreen5m'
+  const [exitStrategy, setExitStrategy] = useState<'marketOpen' | 'firstGreen5m'>('marketOpen');
+
+  // Entry time range (24-hour format)
+  const [entryStartTime, setEntryStartTime] = useState('09:30');
+  const [entryEndTime, setEntryEndTime] = useState('16:00');
+
+  // Get scanner config for display
+  const config = useMemo(() => getScannerConfig(), []);
 
   const formatDate = useCallback((dateString: string): string => {
     const [year, month, day] = dateString.split('-').map(Number);
@@ -135,77 +147,183 @@ const Backtesting: React.FC<BacktestingProps> = ({ gapScanner }) => {
           const dayAlerts = await gapScanner.getHistoricalAlertsForDate(date);
 
           // Filter by strategy if not 'all'
-          const filteredAlerts = strategy === 'all'
+          let filteredAlerts = strategy === 'all'
             ? dayAlerts
             : dayAlerts.filter(alert => alert.type === strategy);
 
-          // Group by symbol and get first signal for each symbol
-          const firstSignalsPerSymbol = new Map<string, Alert>();
+          // Additional filter: Only include signals from CUSTOM entry time range
+          const alertsBeforeTimeFilter = filteredAlerts.length;
+          const [entryStartHour, entryStartMin] = entryStartTime.split(':').map(Number);
+          const [entryEndHour, entryEndMin] = entryEndTime.split(':').map(Number);
+          const entryStart = entryStartHour + entryStartMin / 60;
+          const entryEnd = entryEndHour + entryEndMin / 60;
 
-          filteredAlerts
-            .sort((a, b) => a.timestamp - b.timestamp) // Sort by time
-            .forEach(alert => {
-              if (!firstSignalsPerSymbol.has(alert.symbol)) {
-                firstSignalsPerSymbol.set(alert.symbol, alert);
-              }
-            });
+          filteredAlerts = filteredAlerts.filter(alert => {
+            const alertTime = new Date(alert.timestamp);
+            const etTime = new Date(alertTime.toLocaleString("en-US", {timeZone: "America/New_York"}));
+            const etHour = etTime.getHours() + etTime.getMinutes() / 60;
 
-          // Process each first signal
-          for (const symbol of Array.from(firstSignalsPerSymbol.keys())) {
-            const alert = firstSignalsPerSymbol.get(symbol)!;
+            const isWithinHours = etHour >= entryStart && etHour < entryEnd;
+
+            if (!isWithinHours) {
+              console.log(`🕐 BACKTESTING FILTER: Excluding ${alert.symbol} signal at ${alertTime.toLocaleTimeString('en-US', {timeZone: 'America/New_York'})} ET (${etHour.toFixed(2)} - outside ${entryStartTime}-${entryEndTime} window)`);
+            }
+
+            return isWithinHours;
+          });
+
+          if (alertsBeforeTimeFilter > filteredAlerts.length) {
+            console.log(`📊 BACKTESTING TIME FILTER: ${date} - Filtered ${alertsBeforeTimeFilter - filteredAlerts.length} signals outside entry hours (${alertsBeforeTimeFilter} → ${filteredAlerts.length})`);
+          }
+
+          // For market open exit: group by symbol and get first signal per symbol
+          // For first green 5m exit: allow multiple trades per symbol
+          let signalsToProcess: Alert[] = [];
+
+          if (exitStrategy === 'marketOpen') {
+            // Only take first signal per symbol
+            const firstSignalsPerSymbol = new Map<string, Alert>();
+            filteredAlerts
+              .sort((a, b) => a.timestamp - b.timestamp)
+              .forEach(alert => {
+                if (!firstSignalsPerSymbol.has(alert.symbol)) {
+                  firstSignalsPerSymbol.set(alert.symbol, alert);
+                }
+              });
+            signalsToProcess = Array.from(firstSignalsPerSymbol.values());
+          } else {
+            // Allow all signals (multiple trades per symbol)
+            signalsToProcess = filteredAlerts.sort((a, b) => a.timestamp - b.timestamp);
+          }
+
+          // Process each signal
+          for (const alert of signalsToProcess) {
             try {
-              // Get market open price for the next trading day
-              const nextDay = new Date(date);
-              nextDay.setDate(nextDay.getDate() + 1);
+              let exitPrice: number | null = null;
+              let exitTime: Date | null = null;
+              let minutesToExit: number = 0;
 
-              // Skip weekends for next day
-              while (nextDay.getDay() === 0 || nextDay.getDay() === 6) {
+              if (exitStrategy === 'marketOpen') {
+                // Exit at next day's market open
+                const nextDay = new Date(date);
                 nextDay.setDate(nextDay.getDate() + 1);
-              }
 
-              const nextDayStr = nextDay.toISOString().split('T')[0];
-              const openPrice = await gapScanner.getMarketOpenPrice(symbol, nextDayStr);
+                // Skip weekends for next day
+                while (nextDay.getDay() === 0 || nextDay.getDay() === 6) {
+                  nextDay.setDate(nextDay.getDate() + 1);
+                }
 
-              if (openPrice > 0) {
-                // Calculate P&L for short position (1000 shares)
-                // Short: Sell at entry price, buy at exit price
-                // Profit when exit price < entry price
-                const shareSize = 1000;
-                const pnl = (alert.price - openPrice) * shareSize;
-                const pnlPercent = ((alert.price - openPrice) / alert.price) * 100;
-                const isWin = pnl > 0;
+                const nextDayStr = nextDay.toISOString().split('T')[0];
+                const openPrice = await gapScanner.getMarketOpenPrice(alert.symbol, nextDayStr);
 
-                // Calculate minutes until market open (9:30 AM ET)
+                if (openPrice <= 0) {
+                  console.warn(`No open price for ${alert.symbol} on ${nextDayStr}`);
+                  continue;
+                }
+
+                exitPrice = openPrice;
+                exitTime = new Date(nextDayStr + 'T09:30:00');
                 const signalTime = new Date(alert.timestamp);
-                const marketOpen = new Date(signalTime);
-                marketOpen.setHours(9, 30, 0, 0); // 9:30 AM ET
-                const minutesToOpen = Math.round((marketOpen.getTime() - signalTime.getTime()) / (1000 * 60));
+                minutesToExit = Math.round((exitTime.getTime() - signalTime.getTime()) / (1000 * 60));
 
-                const trade: Trade = {
-                  id: `${symbol}-${date}-${alert.type}`,
-                  symbol,
-                  date,
-                  strategy: alert.type,
-                  entryTime: new Date(alert.timestamp).toLocaleTimeString('en-US', {
-                    hour12: false,
-                    hour: '2-digit',
-                    minute: '2-digit'
-                  }),
-                  entryPrice: alert.price,
-                  exitPrice: openPrice,
-                  pnl,
-                  pnlPercent,
-                  isWin,
-                  signalDetail: alert.detail,
-                  volume: alert.volume || 0,
-                  gapPercent: alert.gapPercent || 0,
-                  minutesToOpen: minutesToOpen
-                };
+              } else {
+                // Exit at first green 5m candle after entry
+                // Get 5-minute bars for the same day
+                const bars5m = await gapScanner['get5MinuteBars'](
+                  alert.symbol,
+                  new Date(date + 'T00:00:00'),
+                  new Date(date + 'T23:59:59')
+                );
 
-                allTrades.push(trade);
+                if (!bars5m || bars5m.length === 0) {
+                  console.warn(`No 5m bars for ${alert.symbol} on ${date}`);
+                  continue;
+                }
+
+                // Find first green 5m candle AFTER entry time
+                const signalTime = new Date(alert.timestamp);
+                let foundExit = false;
+
+                for (const bar of bars5m) {
+                  const barTime = new Date(bar.t);
+
+                  // Must be after entry
+                  if (barTime.getTime() <= signalTime.getTime()) {
+                    continue;
+                  }
+
+                  // Check if it's a completed 5-minute candle (aligned to 0 or 5 minutes)
+                  const etBarTime = new Date(barTime.toLocaleString("en-US", {timeZone: "America/New_York"}));
+                  const minutes = etBarTime.getMinutes();
+                  const seconds = etBarTime.getSeconds();
+                  const isProperlyAligned = minutes % 5 === 0 && seconds === 0;
+
+                  if (!isProperlyAligned) {
+                    continue; // Skip misaligned bars
+                  }
+
+                  // Check if green (close > open)
+                  const isGreen = bar.c > bar.o;
+
+                  if (isGreen) {
+                    exitPrice = bar.c;
+                    exitTime = barTime;
+                    minutesToExit = Math.round((barTime.getTime() - signalTime.getTime()) / (1000 * 60));
+                    foundExit = true;
+                    break;
+                  }
+                }
+
+                if (!foundExit) {
+                  console.warn(`No green 5m candle found after entry for ${alert.symbol} on ${date}`);
+                  continue; // Skip this trade if no exit found
+                }
               }
+
+              // Validate we have exit data
+              if (exitPrice === null || exitTime === null) {
+                console.warn(`Missing exit data for ${alert.symbol} on ${date}`);
+                continue;
+              }
+
+              // Calculate P&L for short position (1000 shares)
+              const shareSize = 1000;
+              const pnl = (alert.price - exitPrice) * shareSize;
+              const pnlPercent = ((alert.price - exitPrice) / alert.price) * 100;
+              const isWin = pnl > 0;
+
+              const trade: Trade = {
+                id: `${alert.symbol}-${date}-${alert.timestamp}-${alert.type}`,
+                symbol: alert.symbol,
+                date,
+                strategy: alert.type,
+                entryTime: new Date(alert.timestamp).toLocaleTimeString('en-US', {
+                  hour12: false,
+                  hour: '2-digit',
+                  minute: '2-digit',
+                  timeZone: 'America/New_York'
+                }),
+                entryPrice: alert.price,
+                exitPrice: exitPrice,
+                exitTime: exitTime.toLocaleTimeString('en-US', {
+                  hour12: false,
+                  hour: '2-digit',
+                  minute: '2-digit',
+                  timeZone: 'America/New_York'
+                }),
+                exitStrategy: exitStrategy,
+                pnl,
+                pnlPercent,
+                isWin,
+                signalDetail: alert.detail,
+                volume: alert.volume || 0,
+                gapPercent: alert.gapPercent || 0,
+                minutesToExit: minutesToExit
+              };
+
+              allTrades.push(trade);
             } catch (error) {
-              console.warn(`Failed to get open price for ${symbol} on ${date}:`, error);
+              console.warn(`Failed to process trade for ${alert.symbol} on ${date}:`, error);
             }
           }
 
@@ -266,14 +384,43 @@ const Backtesting: React.FC<BacktestingProps> = ({ gapScanner }) => {
     } finally {
       setIsRunning(false);
     }
-  }, [startDate, endDate, strategy, gapScanner, validateDateRange, getBusinessDays]);
+  }, [startDate, endDate, strategy, exitStrategy, entryStartTime, entryEndTime, gapScanner, validateDateRange, getBusinessDays]);
 
   return (
     <div className="backtesting">
       <div className="backtesting-header">
         <div className="header-title">
           <span className="header-label">STRATEGY BACKTESTING</span>
-          <span className="header-subtitle">Test signal performance across date ranges • 1000 shares per trade</span>
+          <span className="header-subtitle">Test 5-minute pattern performance • 1000 shares per trade • Customizable entry times & exit strategies</span>
+        </div>
+        <div className="config-display">
+          <span className="config-item">
+            <span className="config-label">Hours:</span> {config.marketHours.startTime} - {config.marketHours.endTime} ET
+          </span>
+          <span className="config-item">
+            <span className="config-label">Price:</span> ${config.gapCriteria.minPrice} - ${config.gapCriteria.maxPrice}
+          </span>
+          <span className="config-item">
+            <span className="config-label">Volume:</span> {(config.gapCriteria.minCumulativeVolume / 1000).toFixed(0)}K+
+          </span>
+          <span className="config-item">
+            <span className="config-label">Gap:</span> {config.gapCriteria.minGapPercentage}%+
+          </span>
+          <span className="config-item">
+            <span className="config-label">5m TT Close:</span> {config.patterns.toppingTail5m.minClosePercent}%+
+          </span>
+          <span className="config-item">
+            <span className="config-label">5m TT Shadow:</span> {config.patterns.toppingTail5m.minShadowToBodyRatio}x+
+          </span>
+          <span className="config-item">
+            <span className="config-label">5m TT HOD:</span> {config.patterns.toppingTail5m.maxHighDistanceFromHODPercent}% max
+          </span>
+          <span className="config-item">
+            <span className="config-label">Green Run:</span> {config.patterns.greenRun.minConsecutiveGreen}+ candles
+          </span>
+          <span className="config-item">
+            <span className="config-label">HOD Distance:</span> {config.patterns.greenRun.maxDistanceFromHODPercent}% max
+          </span>
         </div>
       </div>
 
@@ -314,6 +461,44 @@ const Backtesting: React.FC<BacktestingProps> = ({ gapScanner }) => {
             value={endDate}
             onChange={(e) => setEndDate(e.target.value)}
             max={new Date().toISOString().split('T')[0]}
+            disabled={isRunning}
+            className="control-input"
+          />
+        </div>
+
+        <div className="control-group">
+          <label htmlFor="exit-strategy">Exit Strategy:</label>
+          <select
+            id="exit-strategy"
+            value={exitStrategy}
+            onChange={(e) => setExitStrategy(e.target.value as 'marketOpen' | 'firstGreen5m')}
+            disabled={isRunning}
+            className="control-select"
+          >
+            <option value="marketOpen">Close at Market Open</option>
+            <option value="firstGreen5m">First Green 5m Candle</option>
+          </select>
+        </div>
+
+        <div className="control-group">
+          <label htmlFor="entry-start-time">Entry Start Time:</label>
+          <input
+            id="entry-start-time"
+            type="time"
+            value={entryStartTime}
+            onChange={(e) => setEntryStartTime(e.target.value)}
+            disabled={isRunning}
+            className="control-input"
+          />
+        </div>
+
+        <div className="control-group">
+          <label htmlFor="entry-end-time">Entry End Time:</label>
+          <input
+            id="entry-end-time"
+            type="time"
+            value={entryEndTime}
+            onChange={(e) => setEntryEndTime(e.target.value)}
             disabled={isRunning}
             className="control-input"
           />
@@ -399,7 +584,9 @@ const Backtesting: React.FC<BacktestingProps> = ({ gapScanner }) => {
                     <th>Symbol</th>
                     <th>Strategy</th>
                     <th>Entry Time</th>
-                    <th>Mins to Open</th>
+                    <th>Exit Time</th>
+                    <th>Exit Type</th>
+                    <th>Hold Time</th>
                     <th>Volume</th>
                     <th>Gap %</th>
                     <th>Entry Price</th>
@@ -416,7 +603,11 @@ const Backtesting: React.FC<BacktestingProps> = ({ gapScanner }) => {
                       <td className="symbol">{trade.symbol}</td>
                       <td className="strategy">{trade.strategy}</td>
                       <td>{trade.entryTime}</td>
-                      <td>{trade.minutesToOpen}m</td>
+                      <td>{trade.exitTime}</td>
+                      <td className="exit-strategy">
+                        {trade.exitStrategy === 'marketOpen' ? 'Market Open' : '1st Green 5m'}
+                      </td>
+                      <td>{trade.minutesToExit}m</td>
                       <td>{trade.volume.toLocaleString()}</td>
                       <td className={trade.gapPercent > 0 ? 'positive' : 'negative'}>
                         {trade.gapPercent > 0 ? '+' : ''}{trade.gapPercent.toFixed(1)}%

@@ -24,10 +24,10 @@ export interface ScannerConfig {
 
     // Price range filtering
     minPrice: number; // $1.00
-    maxPrice: number; // $20.00
+    maxPrice: number; // $10.00
 
-    // Volume requirements
-    minCumulativeVolume: number; // 100000 = 100K shares
+    // Volume requirements (cumulative from 1-minute bars during session)
+    minCumulativeVolume: number; // 500000 = 500K shares cumulative during session
   };
 
   // Pattern Detection Parameters
@@ -56,16 +56,96 @@ export interface ScannerConfig {
       minBarVolume: number; // 5000
     };
 
-    // Green candle run patterns
+    // 5-Minute Topping Tail patterns (70% close down from high + shadow/body ratio + HOD proximity)
+    toppingTail5m: {
+      // Minimum close percentage (how far down the candle closes from high)
+      minClosePercent: number; // 70.0 = 70% down from high (not enforcing red/green)
+
+      // Must close red (below open) - NOTE: Currently not enforced in code
+      mustCloseRed: boolean; // true (kept for config compatibility, but ignored)
+
+      // Minimum volume per 5-minute bar
+      minBarVolume: number; // 10000
+
+      // Minimum upper shadow to body ratio
+      // This ensures we only catch true rejection candles with significant wicks
+      // Example: 1.5 means upper shadow must be at least 1.5x the body size
+      minShadowToBodyRatio: number; // 1.5 = upper shadow must be 1.5x body
+
+      // HOD proximity requirements
+      // Maximum distance from HOD for the candle HIGH (allows near-misses)
+      // Example: 2.0 means high can be up to 2% below OR above HOD
+      maxHighDistanceFromHODPercent: number; // 2.0 = within 2% of HOD
+
+      // Maximum distance from HOD for the candle CLOSE (prevents low closes)
+      // Example: 10.0 means close must be within 10% below HOD
+      // This prevents spikes to HOD that close way below
+      maxCloseDistanceFromHODPercent: number; // 10.0 = close within 10% of HOD
+
+      // REQUIREMENTS:
+      // 1. Candle high must be within maxHighDistanceFromHODPercent of HOD
+      // 2. Candle close must be within maxCloseDistanceFromHODPercent of HOD
+      // 3. Must close at least minClosePercent% down from candle high
+      // 4. Upper shadow must be at least minShadowToBodyRatio times the body size
+      // 5. Allows both red and green candles
+    };
+
+    // Green candle run patterns (5-minute)
     greenRun: {
       // Minimum consecutive green candles before red
       minConsecutiveGreen: number; // 4
 
       // Maximum consecutive green candles to avoid over-extended moves
-      maxConsecutiveGreen: number; // 12
+      maxConsecutiveGreen: number; // 20
 
       // Minimum total percentage gain during green run
-      minRunGainPercent: number; // 2.0 = 2%
+      minRunGainPercent: number; // 1.0 = 1%
+
+      // Must close red after green run
+      mustCloseRed: boolean; // true
+
+      // Maximum distance from HOD for green run high (in percentage)
+      // HOD includes pre-market and previous day post-market trading
+      maxDistanceFromHODPercent: number; // 3.0 = within 3% of HOD
+    };
+
+    // EMA(200 Daily) Tap-and-Reject pattern
+    ema200TapReject: {
+      // Maximum distance from EMA200 to consider a "tap" (in percentage)
+      maxTapDistancePercent: number; // 0.5 = 0.5% from EMA200
+
+      // Minimum number of bars to confirm rejection
+      minRejectionBars: number; // 1 = immediate rejection
+
+      // Must close below EMA200 after tap
+      mustCloseBelowEMA: boolean; // true
+    };
+
+    // First New Low After Peak Volume Bar pattern
+    firstNewLowAfterPeakVolume: {
+      // Minimum volume multiplier to consider "peak volume"
+      peakVolumeMultiplier: number; // 2.0 = 2x average volume
+
+      // Distance from HOD to qualify peak volume bar (percentage)
+      maxDistanceFromHODPercent: number; // 1.0 = within 1% of HOD
+
+      // Number of previous bars to compare for "new low"
+      barsForNewLowComparison: number; // 5 bars
+    };
+
+    // HOD Re-test Fail (lower-high) pattern
+    hodRetestFail: {
+      // Maximum distance from HOD for lower high (in dollars)
+      maxLowerHighDistanceDollars: number; // 0.10 = 10 cents
+
+      // Maximum distance from HOD for lower high (in percentage)
+      maxLowerHighDistancePercent: number; // 0.3 = 0.3%
+
+      // Must close red after lower high
+      mustCloseRed: boolean; // true
+
+      // Minimum time between HOD and retest (in minutes)
+      minRetestDelayMinutes: number; // 5 minutes
     };
   };
 
@@ -87,7 +167,7 @@ export interface ScannerConfig {
   // Scanning Behavior
   scanning: {
     // How often to backfill for new signals (in milliseconds)
-    backfillInterval: number; // 30000 = 30 seconds (on :00 and :30)
+    backfillInterval: number; // 10000 = 10 seconds for responsive real-time updates
 
     // Bid/ask spread for symbol data display
     bidAskSpread: number; // 0.01
@@ -101,8 +181,8 @@ export interface ScannerConfig {
     // Number of symbols to analyze in historical scan
     maxSymbolsToAnalyze: number; // 20
 
-    // Minimum volume threshold for symbol discovery
-    minVolumeForDiscovery: number; // 50000
+    // Minimum average volume threshold for symbol discovery (no longer used - discovery based on gap % only)
+    minVolumeForDiscovery: number; // 25000 (deprecated, kept for compatibility)
   };
 
   // Development and Testing
@@ -123,17 +203,17 @@ export interface ScannerConfig {
  */
 export const defaultScannerConfig: ScannerConfig = {
   marketHours: {
-    startTime: '04:00',
-    endTime: '16:30',
+    startTime: '09:30',
+    endTime: '16:00',
     timezone: 'America/New_York',
   },
 
   gapCriteria: {
-    minGapPercentage: 20.0,
+    minGapPercentage: 10.0,
     maxGapPercentage: 10000.0,
     minPrice: 1.0,
     maxPrice: 20.0,
-    minCumulativeVolume: 500000,
+    minCumulativeVolume: 100000,
   },
 
   patterns: {
@@ -143,16 +223,46 @@ export const defaultScannerConfig: ScannerConfig = {
     },
 
     toppingTail: {
-      minUpperWickPercent: 60.0,
-      maxBodyPercent: 40.0,
-      mustCloseRed: false,
+      minUpperWickPercent: 50.0,
+      maxBodyPercent: 50.0,
+      mustCloseRed: true,
       minBarVolume: 1000, // Lower requirement - rely on cumulative volume filtering
+    },
+
+    toppingTail5m: {
+      minClosePercent: 50.0, // 50% down the candle
+      mustCloseRed: false,
+      minBarVolume: 5000,
+      minShadowToBodyRatio: 0.5, // Upper shadow must be at least 1.2x the body
+      maxHighDistanceFromHODPercent: 10.0, // High must be within 2% of HOD
+      maxCloseDistanceFromHODPercent: 10.0, // Close must be within 10% of HOD
     },
 
     greenRun: {
       minConsecutiveGreen: 4,
-      maxConsecutiveGreen: 12,
-      minRunGainPercent: 2.0,
+      maxConsecutiveGreen: 20,
+      minRunGainPercent: 1.0,
+      mustCloseRed: true,
+      maxDistanceFromHODPercent: 3.0, // Only trigger near HOD (within 3%)
+    },
+
+    ema200TapReject: {
+      maxTapDistancePercent: 0.5, // 0.5% from EMA200
+      minRejectionBars: 1, // Immediate rejection
+      mustCloseBelowEMA: true,
+    },
+
+    firstNewLowAfterPeakVolume: {
+      peakVolumeMultiplier: 2.0, // 2x average volume
+      maxDistanceFromHODPercent: 1.0, // Within 1% of HOD
+      barsForNewLowComparison: 5, // Compare against last 5 bars
+    },
+
+    hodRetestFail: {
+      maxLowerHighDistanceDollars: 0.1, // 10 cents
+      maxLowerHighDistancePercent: 0.3, // 0.3%
+      mustCloseRed: true,
+      minRetestDelayMinutes: 5, // 5 minutes after HOD
     },
   },
 
@@ -164,14 +274,14 @@ export const defaultScannerConfig: ScannerConfig = {
   },
 
   scanning: {
-    backfillInterval: 30000,
+    backfillInterval: 10000, // Check for new signals every 10 seconds
     bidAskSpread: 0.01,
   },
 
   historical: {
     maxLookbackDays: 730,
-    maxSymbolsToAnalyze: 20,
-    minVolumeForDiscovery: 50000,
+    maxSymbolsToAnalyze: 100, // Increased from 20 to 100 to capture more symbols
+    minVolumeForDiscovery: 25000, // Reduced from 50000 to 25000 for more discovery
   },
 
   development: {
@@ -320,8 +430,8 @@ export const exampleConfigs = {
     ...defaultScannerConfig,
     marketHours: {
       ...defaultScannerConfig.marketHours,
-      startTime: '04:00',
-      endTime: '16:00', // Extended to 4:00 PM for testing
+      startTime: '06:30',
+      endTime: '09:25',
     },
     development: {
       ...defaultScannerConfig.development,

@@ -1,7 +1,4 @@
-export type PatternType =
-  | 'ToppingTail1m'
-  | 'HODBreakCloseUnder'
-  | 'Run4PlusGreenThenRed';
+export type PatternType = 'HODBreakCloseUnder' | 'ToppingTail1m' | 'ToppingTail5m' | 'GreenRunReject';
 
 export interface Alert {
   id: string;
@@ -52,27 +49,3 @@ export interface BarData {
   volume: number;
 }
 
-export interface PatternConfig {
-  title: string;
-  color: string;
-  priority: number;
-  description: string;
-}
-
-export interface ScannerWindowProps {
-  title: string;
-  color: string;
-  priority: number;
-  alerts: Alert[];
-  pattern: PatternType;
-}
-
-export interface StatusBarProps {
-  isConnected: boolean;
-  stats: {
-    totalAlerts: number;
-    symbolsTracked: number;
-    lastUpdate: string;
-  };
-  symbols: string[];
-}

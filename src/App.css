@@ -353,8 +353,8 @@ body {
 .scanner-grid {
   flex: 1;
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr; /* Three equal columns for 3 patterns */
-  grid-template-rows: 1fr;
+  grid-template-columns: repeat(3, 1fr); /* Three columns, two rows for 6 patterns */
+  grid-template-rows: 1fr 1fr;
   gap: 3px;
   background: var(--bg-secondary);
   height: calc(100vh - 80px); /* Account for thicker header */
@@ -375,7 +375,7 @@ body {
   background:
     linear-gradient(90deg, var(--border-luxury) 1px, transparent 1px),
     linear-gradient(0deg, var(--border-luxury) 1px, transparent 1px);
-  background-size: calc(100% / 3) 100%, 100% calc(100% / 1);
+  background-size: calc(100% / 3) 100%, 100% calc(100% / 2);
   opacity: 0.1;
   pointer-events: none;
   z-index: -1;
@@ -383,8 +383,10 @@ body {
 
 /* G-Class Layout System - Cohesive Design */
 .unified-layout,
+.hodbreak-layout,
 .historical-layout,
-.backtest-layout {
+.backtest-layout,
+.symbols-layout {
   flex: 1;
   height: calc(100vh - 60px);
   overflow: hidden;
@@ -398,9 +400,16 @@ body {
   padding: 0;
 }
 
+/* HOD Break Feed - Premium full height container */
+.hodbreak-layout {
+  padding: 0;
+  background: linear-gradient(135deg, var(--bg-primary) 0%, var(--bg-secondary) 100%);
+}
+
 /* Historical and Backtest - Padded containers */
 .historical-layout,
-.backtest-layout {
+.backtest-layout,
+.symbols-layout {
   padding: 0;
   background: linear-gradient(135deg, var(--bg-primary) 0%, var(--bg-secondary) 100%);
 }
@@ -414,8 +423,8 @@ body {
 /* G-Class Responsive System - Optimized for 3 Patterns */
 @media (max-width: 1400px) {
   .scanner-grid {
-    grid-template-columns: 1fr 1fr 1fr; /* Keep 3 columns on large screens */
-    grid-template-rows: 1fr;
+    grid-template-columns: repeat(3, 1fr); /* Keep 3 columns, 2 rows */
+    grid-template-rows: 1fr 1fr;
     gap: 2px;
     padding: 6px;
   }
@@ -424,7 +433,7 @@ body {
 @media (max-width: 1024px) {
   .scanner-grid {
     grid-template-columns: 1fr 1fr; /* Two columns for medium screens */
-    grid-template-rows: 1fr 1fr; /* Two rows, with one pattern taking full width on bottom */
+    grid-template-rows: 1fr 1fr 1fr; /* Three rows for 6 patterns */
     gap: 2px;
     height: calc(100vh - 78px);
   }
@@ -442,7 +451,7 @@ body {
 @media (max-width: 768px) {
   .scanner-grid {
     grid-template-columns: 1fr; /* Single column for mobile */
-    grid-template-rows: 1fr 1fr 1fr; /* Three equal rows */
+    grid-template-rows: repeat(6, 1fr); /* Six equal rows for all patterns */
     height: auto;
     min-height: calc(100vh - 78px);
     gap: 2px;

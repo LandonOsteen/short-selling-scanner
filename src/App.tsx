@@ -1,38 +1,26 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import './App.css';
-import ScannerWindow from './components/ScannerWindow';
-import StatusBar from './components/StatusBar';
-import UnifiedAlertFeed from './components/UnifiedAlertFeed';
+import HODBreakFeed from './components/HODBreakFeed';
 import HistoricalTesting from './components/HistoricalTesting';
 import Backtesting from './components/Backtesting';
-import GapSymbolsMonitor from './components/GapSymbolsMonitor';
-import { PatternType, Alert } from './types';
+import { Alert } from './types';
 import { GapScanner } from './services/GapScanner';
 import { getScannerConfig } from './config/scannerConfig';
 
-// Pattern configs for active scanners - G-Class styling
-const PATTERN_CONFIGS: Record<PatternType, { title: string; color: string; priority: number }> = {
-  'ToppingTail1m': { title: 'Topping Tail 1m', color: '#c9aa96', priority: 1 },
-  'HODBreakCloseUnder': { title: 'HOD Break Close Under', color: '#e6d7c8', priority: 1 },
-  'Run4PlusGreenThenRed': { title: '4+ Green Then Red', color: '#a08b7a', priority: 3 },
-};
-
 // Performance constants
 const MAX_ALERTS_IN_MEMORY = 100; // Limit memory usage
-const MAX_ALERTS_PER_PATTERN = 20;
 
 function App() {
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [symbols, setSymbols] = useState<string[]>([]);
   const [isConnected, setIsConnected] = useState(false);
-  const [isInitializing, setIsInitializing] = useState(true);
   const [gapScanner] = useState(() => new GapScanner(undefined, getScannerConfig()));
   const [stats, setStats] = useState({
     totalAlerts: 0,
     symbolsTracked: 0,
     lastUpdate: new Date().toLocaleTimeString()
   });
-  const [layoutMode, setLayoutMode] = useState<'grid' | 'unified' | 'historical' | 'backtest' | 'symbols'>('grid');
+  const [layoutMode, setLayoutMode] = useState<'hodbreak' | 'historical' | 'backtest'>('hodbreak');
   const [voiceAlertsEnabled, setVoiceAlertsEnabled] = useState(false);
   const [soundAlertsEnabled, setSoundAlertsEnabled] = useState(false);
   const [selectedSound, setSelectedSound] = useState('alert');
@@ -48,55 +36,16 @@ function App() {
     enableSoundService();
   }, [soundAlertsEnabled]);
 
-  // Real gap stock scanner with 6:00 AM - 9:30 AM ET timeframe
+  // Real gap stock scanner with configurable timeframe
   useEffect(() => {
     const initializeScanner = async () => {
       try {
         console.log('Initializing Gap Scanner...');
-        setIsInitializing(true);
         setIsConnected(true);
 
-        console.log('Scanner initialization starting...');
-
-        // Backfill historical data if accessing after 6:00 AM
-        console.log('Backfilling historical data...');
-        let backfilledAlerts: Alert[] = [];
-        try {
-          backfilledAlerts = await gapScanner.backfillMissedData();
-          if (backfilledAlerts.length > 0) {
-            setAlerts(backfilledAlerts);
-            console.log(`Loaded ${backfilledAlerts.length} historical alerts`);
-          }
-        } catch (error) {
-          console.warn('Backfill failed:', error);
-        }
-
-        // Start scanning for current gap stocks
-        console.log('Starting gap scanner...');
-        try {
-          gapScanner.startScanning();
-        } catch (error) {
-          console.warn('Scanner start failed:', error);
-        }
-
-        // Initial load of qualified gap stocks
-        const gapStocks = await gapScanner.scanForGappers();
-        const gapSymbols = gapStocks.map(stock => stock.symbol);
-        setSymbols(gapSymbols);
-
-        setStats({
-          totalAlerts: backfilledAlerts.length,
-          symbolsTracked: gapSymbols.length,
-          lastUpdate: new Date().toLocaleTimeString()
-        });
-
-        console.log(`Tracking ${gapSymbols.length} gap stocks: ${gapSymbols.join(', ')}`);
-
-        // Scanner initialization complete
-        setIsInitializing(false);
-
-        // Set up alert callback with pagination
+        // Set up alert callback FIRST (before any scanning starts)
         gapScanner.onAlert((alert: Alert) => {
+          console.log(`📨 Received new alert: ${alert.symbol} ${alert.type} at ${new Date(alert.timestamp).toLocaleTimeString()}`);
           setAlerts(prev => {
             const newAlerts = [...prev, alert];
             // Keep only the most recent alerts to prevent memory issues
@@ -111,11 +60,52 @@ function App() {
           }));
         });
 
+        // Backfill historical data if accessing after configured start time
+        console.log('Backfilling historical data...');
+        try {
+          const backfilledAlerts = await gapScanner.backfillMissedData();
+          if (backfilledAlerts.length > 0) {
+            // Fire initial alerts through the callback system for consistency
+            console.log(`📊 Loading ${backfilledAlerts.length} historical alerts through callback system...`);
+            backfilledAlerts.forEach(alert => {
+              // Fire through the alert system to ensure deduplication and sound alerts
+              gapScanner.fireAlert(alert);
+            });
+          }
+
+          // Set the baseline time for continuous scanning
+          // This ensures future scans only look for NEW alerts after this point
+          gapScanner.setLastBackfillTime(Date.now());
+        } catch (error) {
+          console.warn('Backfill failed:', error);
+        }
+
+        // Initial load of qualified gap stocks
+        const gapStocks = await gapScanner.scanForGappers();
+        const gapSymbols = gapStocks.map(stock => stock.symbol);
+        setSymbols(gapSymbols);
+
+        setStats(prev => ({
+          ...prev,
+          symbolsTracked: gapSymbols.length,
+          lastUpdate: new Date().toLocaleTimeString()
+        }));
+
+        console.log(`Tracking ${gapSymbols.length} gap stocks: ${gapSymbols.join(', ')}`);
+
+        // Start continuous scanning (will run every 10 seconds)
+        console.log('Starting continuous gap scanner...');
+        try {
+          gapScanner.startScanning();
+          console.log('✅ Scanner started - will check for new signals every 10 seconds');
+        } catch (error) {
+          console.warn('Scanner start failed:', error);
+        }
+
       } catch (error) {
         console.error('Failed to initialize scanner:', error);
         console.error('Error details:', error);
         setIsConnected(false);
-        setIsInitializing(false);
       }
     };
 
@@ -159,15 +149,8 @@ function App() {
     };
   }, [gapScanner]);
 
-  // Memoize expensive pattern filtering and sorting
-  const getAlertsForPattern = useCallback((pattern: PatternType): Alert[] => {
-    return alerts.filter(alert => alert.type === pattern)
-                 .sort((a, b) => b.timestamp - a.timestamp)
-                 .slice(0, MAX_ALERTS_PER_PATTERN);
-  }, [alerts]);
-
   // Memoize event handlers to prevent child re-renders
-  const handleLayoutModeChange = useCallback((mode: 'grid' | 'unified' | 'historical' | 'backtest' | 'symbols') => {
+  const handleLayoutModeChange = useCallback((mode: 'hodbreak' | 'historical' | 'backtest') => {
     setLayoutMode(mode);
   }, []);
 
@@ -179,23 +162,15 @@ function App() {
         switch (e.key) {
           case '1':
             e.preventDefault();
-            handleLayoutModeChange('grid');
+            handleLayoutModeChange('hodbreak');
             break;
           case '2':
             e.preventDefault();
-            handleLayoutModeChange('unified');
+            handleLayoutModeChange('historical');
             break;
           case '3':
             e.preventDefault();
-            handleLayoutModeChange('historical');
-            break;
-          case '4':
-            e.preventDefault();
             handleLayoutModeChange('backtest');
-            break;
-          case '5':
-            e.preventDefault();
-            handleLayoutModeChange('symbols');
             break;
           case 'v':
             e.preventDefault();
@@ -214,28 +189,14 @@ function App() {
       <div className="app-controls">
         <div className="layout-toggle" role="tablist" aria-label="Layout view options">
           <button
-            className={`toggle-btn ${layoutMode === 'grid' ? 'active' : ''}`}
-            onClick={() => handleLayoutModeChange('grid')}
+            className={`toggle-btn ${layoutMode === 'hodbreak' ? 'active' : ''}`}
+            onClick={() => handleLayoutModeChange('hodbreak')}
             role="tab"
-            aria-selected={layoutMode === 'grid'}
+            aria-selected={layoutMode === 'hodbreak'}
             aria-controls="main-content"
-            title="Switch to grid view (Ctrl+1)"
-            disabled={isInitializing}
+            title="Switch to Live Scanner feed (Ctrl+1)"
           >
-            <span>GRID VIEW</span>
-            {isInitializing && layoutMode === 'grid' && <span className="loading-dot" aria-hidden="true">●</span>}
-          </button>
-          <button
-            className={`toggle-btn ${layoutMode === 'unified' ? 'active' : ''}`}
-            onClick={() => handleLayoutModeChange('unified')}
-            role="tab"
-            aria-selected={layoutMode === 'unified'}
-            aria-controls="main-content"
-            title="Switch to unified feed (Ctrl+2)"
-            disabled={isInitializing}
-          >
-            <span>UNIFIED FEED</span>
-            {isInitializing && layoutMode === 'unified' && <span className="loading-dot" aria-hidden="true">●</span>}
+            <span>LIVE SCANNER</span>
           </button>
           <button
             className={`toggle-btn ${layoutMode === 'historical' ? 'active' : ''}`}
@@ -243,7 +204,7 @@ function App() {
             role="tab"
             aria-selected={layoutMode === 'historical'}
             aria-controls="main-content"
-            title="Switch to historical testing (Ctrl+3)"
+            title="Switch to historical testing (Ctrl+2)"
           >
             <span>HISTORICAL TEST</span>
           </button>
@@ -253,19 +214,9 @@ function App() {
             role="tab"
             aria-selected={layoutMode === 'backtest'}
             aria-controls="main-content"
-            title="Switch to backtesting (Ctrl+4)"
+            title="Switch to backtesting (Ctrl+3)"
           >
             <span>BACKTEST</span>
-          </button>
-          <button
-            className={`toggle-btn ${layoutMode === 'symbols' ? 'active' : ''}`}
-            onClick={() => handleLayoutModeChange('symbols')}
-            role="tab"
-            aria-selected={layoutMode === 'symbols'}
-            aria-controls="main-content"
-            title="Switch to gap symbols monitor (Ctrl+5)"
-          >
-            <span>GAP SYMBOLS</span>
           </button>
         </div>
 
@@ -334,64 +285,33 @@ function App() {
       </div>
 
       <main id="main-content" role="main" aria-label={`${layoutMode} view`}>
-        {layoutMode === 'grid' ? (
-          <div className="scanner-grid" role="grid" aria-label="Pattern scanner windows">
-            {isInitializing && (
-              <div className="loading-overlay" aria-live="polite">
-                <span className="loading-text">INITIALIZING SCANNER...</span>
-              </div>
-            )}
-            {Object.entries(PATTERN_CONFIGS).map(([pattern, config]) => (
-              <ScannerWindow
-                key={pattern}
-                title={config.title}
-                color={config.color}
-                priority={config.priority}
-                alerts={getAlertsForPattern(pattern as PatternType)}
-                pattern={pattern as PatternType}
-              />
-            ))}
+        {layoutMode === 'hodbreak' ? (
+          <div className="hodbreak-layout">
+            <HODBreakFeed
+              alerts={alerts}
+              voiceAlertsEnabled={voiceAlertsEnabled}
+              soundAlertsEnabled={soundAlertsEnabled}
+              selectedSound={selectedSound}
+              isConnected={isConnected}
+              stats={stats}
+              symbols={symbols}
+            />
           </div>
-      ) : layoutMode === 'unified' ? (
-        <div className="unified-layout">
-          <UnifiedAlertFeed
-            alerts={alerts}
-            voiceAlertsEnabled={voiceAlertsEnabled}
-            soundAlertsEnabled={soundAlertsEnabled}
-            selectedSound={selectedSound}
-            isConnected={isConnected}
-            stats={stats}
-            symbols={symbols}
-          />
-        </div>
-      ) : layoutMode === 'historical' ? (
-        <div className="historical-layout">
-          <HistoricalTesting
-            gapScanner={gapScanner}
-          />
-        </div>
-      ) : layoutMode === 'symbols' ? (
-        <div className="symbols-layout">
-          <GapSymbolsMonitor
-            gapScanner={gapScanner}
-          />
-        </div>
-      ) : (
-        <div className="backtest-layout">
-          <Backtesting
-            gapScanner={gapScanner}
-          />
-        </div>
+        ) : layoutMode === 'historical' ? (
+          <div className="historical-layout">
+            <HistoricalTesting
+              gapScanner={gapScanner}
+            />
+          </div>
+        ) : (
+          <div className="backtest-layout">
+            <Backtesting
+              gapScanner={gapScanner}
+            />
+          </div>
         )}
       </main>
 
-      {layoutMode !== 'unified' && layoutMode !== 'backtest' && layoutMode !== 'symbols' && (
-        <StatusBar
-          isConnected={isConnected}
-          stats={stats}
-          symbols={symbols}
-        />
-      )}
     </div>
   );
 }

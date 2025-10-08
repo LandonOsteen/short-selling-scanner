@@ -1,7 +1,8 @@
-import React, { useState, useCallback, memo } from 'react';
+import React, { useState, useCallback, memo, useMemo } from 'react';
 import './HistoricalTesting.css';
 import { Alert, PatternType } from '../types';
 import { GapScanner } from '../services/GapScanner';
+import { getScannerConfig } from '../config/scannerConfig';
 
 interface HistoricalTestingProps {
   gapScanner: GapScanner;
@@ -11,15 +12,14 @@ interface HistoricalResults {
   date: string;
   alerts: Alert[];
   totalAlerts: number;
-  patternBreakdown: Record<PatternType, number>;
+  patternBreakdown: Partial<Record<PatternType, number>>;
   symbolsScanned: string[];
   scanDuration: number;
 }
 
-const PATTERN_CONFIGS: Record<PatternType, { title: string; color: string; priority: number }> = {
-  'ToppingTail1m': { title: 'Topping Tail 1m', color: '#c9aa96', priority: 1 },
-  'HODBreakCloseUnder': { title: 'HOD Break Close Under', color: '#e6d7c8', priority: 1 },
-  'Run4PlusGreenThenRed': { title: '4+ Green Then Red', color: '#a08b7a', priority: 3 },
+const PATTERN_CONFIGS: Partial<Record<PatternType, { title: string; color: string; priority: number }>> = {
+  'ToppingTail5m': { title: '5-Minute Topping Tail', color: '#dc3545', priority: 1 },
+  'GreenRunReject': { title: 'Green Run Rejection', color: '#28a745', priority: 1 },
 };
 
 const HistoricalTesting: React.FC<HistoricalTestingProps> = ({ gapScanner }) => {
@@ -27,6 +27,10 @@ const HistoricalTesting: React.FC<HistoricalTestingProps> = ({ gapScanner }) => 
   const [isScanning, setIsScanning] = useState(false);
   const [results, setResults] = useState<HistoricalResults | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [patternFilter, setPatternFilter] = useState<PatternType | 'all'>('all');
+
+  // Get scanner config for display
+  const config = useMemo(() => getScannerConfig(), []);
 
   const formatDate = useCallback((dateString: string): string => {
     // Parse date string safely to avoid timezone issues
@@ -87,17 +91,23 @@ const HistoricalTesting: React.FC<HistoricalTestingProps> = ({ gapScanner }) => 
       // Get historical alerts for the selected date
       const historicalAlerts = await gapScanner.getHistoricalAlertsForDate(selectedDate);
 
-      // Calculate pattern breakdown
-      const patternBreakdown: Record<PatternType, number> = {
-        'ToppingTail1m': 0,
-        'HODBreakCloseUnder': 0,
-        'Run4PlusGreenThenRed': 0,
+      // Calculate pattern breakdown (only for 5-minute patterns)
+      const patternBreakdown: Partial<Record<PatternType, number>> = {
+        'ToppingTail5m': 0,
+        'GreenRunReject': 0,
       };
 
       const uniqueSymbols = new Set<string>();
 
-      historicalAlerts.forEach(alert => {
-        patternBreakdown[alert.type]++;
+      // Filter to only include 5-minute patterns we care about
+      const filteredHistoricalAlerts = historicalAlerts.filter(
+        alert => alert.type === 'ToppingTail5m' || alert.type === 'GreenRunReject'
+      );
+
+      filteredHistoricalAlerts.forEach(alert => {
+        if (alert.type in patternBreakdown) {
+          patternBreakdown[alert.type] = (patternBreakdown[alert.type] || 0) + 1;
+        }
         uniqueSymbols.add(alert.symbol);
       });
 
@@ -105,8 +115,8 @@ const HistoricalTesting: React.FC<HistoricalTestingProps> = ({ gapScanner }) => 
 
       setResults({
         date: selectedDate,
-        alerts: historicalAlerts,
-        totalAlerts: historicalAlerts.length,
+        alerts: filteredHistoricalAlerts,
+        totalAlerts: filteredHistoricalAlerts.length,
         patternBreakdown,
         symbolsScanned: Array.from(uniqueSymbols),
         scanDuration
@@ -120,12 +130,48 @@ const HistoricalTesting: React.FC<HistoricalTestingProps> = ({ gapScanner }) => 
     }
   }, [selectedDate, gapScanner]);
 
+  // Filter alerts by pattern type
+  const filteredAlerts = useMemo(() => {
+    if (!results) return [];
+    if (patternFilter === 'all') return results.alerts;
+    return results.alerts.filter(alert => alert.type === patternFilter);
+  }, [results, patternFilter]);
+
   return (
     <div className="historical-testing">
       <div className="historical-header">
         <div className="header-title">
           <span className="header-label">HISTORICAL PATTERN TESTING</span>
-          <span className="header-subtitle">Scan pre-market signals for any past date</span>
+          <span className="header-subtitle">Scan for 5-minute patterns during regular market hours</span>
+        </div>
+        <div className="config-display">
+          <span className="config-item">
+            <span className="config-label">Hours:</span> {config.marketHours.startTime} - {config.marketHours.endTime} ET
+          </span>
+          <span className="config-item">
+            <span className="config-label">Price:</span> ${config.gapCriteria.minPrice} - ${config.gapCriteria.maxPrice}
+          </span>
+          <span className="config-item">
+            <span className="config-label">Volume:</span> {(config.gapCriteria.minCumulativeVolume / 1000).toFixed(0)}K+
+          </span>
+          <span className="config-item">
+            <span className="config-label">Gap:</span> {config.gapCriteria.minGapPercentage}%+
+          </span>
+          <span className="config-item">
+            <span className="config-label">5m TT Close:</span> {config.patterns.toppingTail5m.minClosePercent}%+
+          </span>
+          <span className="config-item">
+            <span className="config-label">5m TT Shadow:</span> {config.patterns.toppingTail5m.minShadowToBodyRatio}x+
+          </span>
+          <span className="config-item">
+            <span className="config-label">5m TT HOD:</span> {config.patterns.toppingTail5m.maxHighDistanceFromHODPercent}% max
+          </span>
+          <span className="config-item">
+            <span className="config-label">Green Run:</span> {config.patterns.greenRun.minConsecutiveGreen}+ candles
+          </span>
+          <span className="config-item">
+            <span className="config-label">HOD Distance:</span> {config.patterns.greenRun.maxDistanceFromHODPercent}% max
+          </span>
         </div>
       </div>
 
@@ -170,7 +216,8 @@ const HistoricalTesting: React.FC<HistoricalTestingProps> = ({ gapScanner }) => 
           <div className="results-header">
             <h3>Results for {formatDate(results.date)}</h3>
             <div className="results-summary">
-              <span className="total-alerts">{results.totalAlerts} ALERTS</span>
+              <span className="total-alerts">{results.totalAlerts} TOTAL</span>
+              <span className="filtered-alerts">{filteredAlerts.length} SHOWING</span>
               <span className="symbols-count">{results.symbolsScanned.length} SYMBOLS</span>
               <span className="scan-time">{(results.scanDuration / 1000).toFixed(1)}s</span>
             </div>
@@ -178,14 +225,35 @@ const HistoricalTesting: React.FC<HistoricalTestingProps> = ({ gapScanner }) => 
 
           <div className="pattern-breakdown">
             <h4>Pattern Breakdown</h4>
+            <div className="pattern-filter-group">
+              <label htmlFor="pattern-filter">Filter by Pattern:</label>
+              <select
+                id="pattern-filter"
+                value={patternFilter}
+                onChange={(e) => setPatternFilter(e.target.value as PatternType | 'all')}
+                className="pattern-filter-select"
+              >
+                <option value="all">All Patterns ({results.totalAlerts})</option>
+                {Object.entries(PATTERN_CONFIGS).map(([pattern, config]) => {
+                  const count = results.patternBreakdown[pattern as PatternType] || 0;
+                  return (
+                    <option key={pattern} value={pattern}>
+                      {config.title} ({count})
+                    </option>
+                  );
+                })}
+              </select>
+            </div>
             <div className="pattern-grid">
               {Object.entries(PATTERN_CONFIGS).map(([pattern, config]) => {
-                const count = results.patternBreakdown[pattern as PatternType];
+                const count = results.patternBreakdown[pattern as PatternType] || 0;
+                const isSelected = patternFilter === pattern || patternFilter === 'all';
                 return (
                   <div
                     key={pattern}
-                    className={`pattern-stat priority-${config.priority}`}
+                    className={`pattern-stat priority-${config.priority} ${isSelected ? 'selected' : 'dimmed'}`}
                     style={{ borderLeftColor: config.color }}
+                    onClick={() => setPatternFilter(patternFilter === pattern ? 'all' : pattern as PatternType)}
                   >
                     <div className="pattern-name" style={{ color: config.color }}>
                       {config.title}
@@ -198,18 +266,23 @@ const HistoricalTesting: React.FC<HistoricalTestingProps> = ({ gapScanner }) => 
           </div>
 
           <div className="alerts-timeline">
-            <h4>Alert Timeline</h4>
+            <h4>Alert Timeline {patternFilter !== 'all' && PATTERN_CONFIGS[patternFilter] && `(${PATTERN_CONFIGS[patternFilter]!.title})`}</h4>
             <div className="timeline-container">
-              {results.alerts.length === 0 ? (
+              {filteredAlerts.length === 0 ? (
                 <div className="no-alerts-historical">
                   <div className="no-alerts-main">NO PATTERNS DETECTED</div>
-                  <div className="no-alerts-sub">No qualifying signals found for this date</div>
+                  <div className="no-alerts-sub">
+                    {results.alerts.length === 0
+                      ? 'No qualifying signals found for this date'
+                      : 'No signals match the selected filter'}
+                  </div>
                 </div>
               ) : (
-                results.alerts
+                filteredAlerts
                   .sort((a, b) => a.timestamp - b.timestamp)
+                  .filter((alert) => PATTERN_CONFIGS[alert.type]) // Only show alerts for patterns we support
                   .map((alert) => {
-                    const config = PATTERN_CONFIGS[alert.type];
+                    const config = PATTERN_CONFIGS[alert.type]!; // Non-null assertion safe due to filter above
                     return (
                       <div
                         key={alert.id}
@@ -227,6 +300,9 @@ const HistoricalTesting: React.FC<HistoricalTestingProps> = ({ gapScanner }) => 
                           <div className="alert-details">
                             <span className="alert-price">${alert.price.toFixed(2)}</span>
                             <span className="alert-volume">{(alert.volume / 1000).toFixed(0)}k vol</span>
+                            {alert.gapPercent && (
+                              <span className="alert-gap">{alert.gapPercent.toFixed(1)}% gap</span>
+                            )}
                           </div>
                         </div>
                         <div className="alert-description">{alert.detail}</div>
