@@ -229,7 +229,7 @@ export interface ScannerConfig {
  */
 export const defaultScannerConfig: ScannerConfig = {
   marketHours: {
-    startTime: '09:30',
+    startTime: '07:00', // 7:00 AM ET - Start scanning from pre-market
     endTime: '18:00',
     timezone: 'America/New_York',
   },
@@ -315,7 +315,7 @@ export const defaultScannerConfig: ScannerConfig = {
   development: {
     enableDebugLogging: true,
     overrideCurrentTime: null,
-    enableTestSignal: true, // Set to true to test scanner/alert functionality
+    enableTestSignal: false, // Set to true to test scanner/alert functionality
   },
 };
 

@@ -844,18 +844,9 @@ export class GapScanner {
     console.log(`📊 Performing initial gap stock scan...`);
     const gapStocks = await this.scanForGappers();
 
-    // Check if we should use WebSocket (during regular market hours)
-    const now = this.getCurrentTime();
-    const etHour = this.getETHour(now);
-
-    // Parse endTime from config to get max hour
-    const [endHour, endMin] = this.config.marketHours.endTime.split(':').map(Number);
-    const maxETHour = endHour + endMin / 60;
-
+    // Check if we should use WebSocket (anytime app is running with qualifying stocks)
     const useWebSocketScanning = this.useWebSocket &&
                                   this.webSocketScanner &&
-                                  etHour >= 9.5 &&
-                                  etHour <= maxETHour &&
                                   gapStocks.length > 0;
 
     if (useWebSocketScanning) {
