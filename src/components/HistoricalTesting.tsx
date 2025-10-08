@@ -29,6 +29,10 @@ const HistoricalTesting: React.FC<HistoricalTestingProps> = ({ gapScanner }) => 
   const [error, setError] = useState<string | null>(null);
   const [patternFilter, setPatternFilter] = useState<PatternType | 'all'>('all');
 
+  // Time filtering
+  const [filterStartTime, setFilterStartTime] = useState('06:30');
+  const [filterEndTime, setFilterEndTime] = useState('10:00');
+
   // Get scanner config for display
   const config = useMemo(() => getScannerConfig(), []);
 
@@ -130,12 +134,33 @@ const HistoricalTesting: React.FC<HistoricalTestingProps> = ({ gapScanner }) => 
     }
   }, [selectedDate, gapScanner]);
 
-  // Filter alerts by pattern type
+  // Filter alerts by pattern type AND time range
   const filteredAlerts = useMemo(() => {
     if (!results) return [];
-    if (patternFilter === 'all') return results.alerts;
-    return results.alerts.filter(alert => alert.type === patternFilter);
-  }, [results, patternFilter]);
+
+    // Parse filter times
+    const [startHour, startMin] = filterStartTime.split(':').map(Number);
+    const [endHour, endMin] = filterEndTime.split(':').map(Number);
+    const filterStart = startHour + startMin / 60;
+    const filterEnd = endHour + endMin / 60;
+
+    let filtered = results.alerts;
+
+    // Filter by pattern type
+    if (patternFilter !== 'all') {
+      filtered = filtered.filter(alert => alert.type === patternFilter);
+    }
+
+    // Filter by time range
+    filtered = filtered.filter(alert => {
+      const alertTime = new Date(alert.timestamp);
+      const etTime = new Date(alertTime.toLocaleString("en-US", {timeZone: "America/New_York"}));
+      const etHour = etTime.getHours() + etTime.getMinutes() / 60;
+      return etHour >= filterStart && etHour < filterEnd;
+    });
+
+    return filtered;
+  }, [results, patternFilter, filterStartTime, filterEndTime]);
 
   return (
     <div className="historical-testing">
@@ -164,7 +189,7 @@ const HistoricalTesting: React.FC<HistoricalTestingProps> = ({ gapScanner }) => 
             <span className="config-label">5m TT Shadow:</span> {config.patterns.toppingTail5m.minShadowToBodyRatio}x+
           </span>
           <span className="config-item">
-            <span className="config-label">5m TT HOD:</span> {config.patterns.toppingTail5m.maxHighDistanceFromHODPercent}% max
+            <span className="config-label">5m TT HOD:</span> {config.patterns.toppingTail5m.requireStrictHODBreak ? 'Strict Break' : `${config.patterns.toppingTail5m.maxHighDistanceFromHODPercent}% max`}
           </span>
           <span className="config-item">
             <span className="config-label">Green Run:</span> {config.patterns.greenRun.minConsecutiveGreen}+ candles
@@ -184,6 +209,28 @@ const HistoricalTesting: React.FC<HistoricalTestingProps> = ({ gapScanner }) => 
             value={selectedDate}
             onChange={handleDateChange}
             max={new Date().toISOString().split('T')[0]}
+            disabled={isScanning}
+          />
+        </div>
+
+        <div className="date-input-group">
+          <label htmlFor="filter-start-time">Filter Start:</label>
+          <input
+            id="filter-start-time"
+            type="time"
+            value={filterStartTime}
+            onChange={(e) => setFilterStartTime(e.target.value)}
+            disabled={isScanning}
+          />
+        </div>
+
+        <div className="date-input-group">
+          <label htmlFor="filter-end-time">Filter End:</label>
+          <input
+            id="filter-end-time"
+            type="time"
+            value={filterEndTime}
+            onChange={(e) => setFilterEndTime(e.target.value)}
             disabled={isScanning}
           />
         </div>

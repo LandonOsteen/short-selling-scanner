@@ -56,38 +56,56 @@ export interface ScannerConfig {
       minBarVolume: number; // 5000
     };
 
-    // 5-Minute Topping Tail patterns (70% close down from high + shadow/body ratio + HOD proximity)
+    // 5-Minute Topping Tail patterns
+    // Definition: A candle that breaks HOD, gets rejected, and closes with a long upper wick
     toppingTail5m: {
-      // Minimum close percentage (how far down the candle closes from high)
-      minClosePercent: number; // 70.0 = 70% down from high (not enforcing red/green)
+      // REQUIREMENT 1: How far down the candle closes from its high
+      // This measures rejection strength - higher % = stronger rejection
+      // Example: 60.0 means close must be at least 60% down from candle high
+      // If candle: H=10.00, L=9.00, range=1.00, then C must be ≤9.40 (60% down)
+      minClosePercent: number; // 60.0 = close at least 60% down from high
 
-      // Must close red (below open) - NOTE: Currently not enforced in code
-      mustCloseRed: boolean; // true (kept for config compatibility, but ignored)
+      // REQUIREMENT 2: Must close red (below open)
+      // When true: only red candles qualify (close < open)
+      // When false: both red and green candles qualify
+      mustCloseRed: boolean; // false = allow both red/green candles
 
-      // Minimum volume per 5-minute bar
-      minBarVolume: number; // 10000
+      // REQUIREMENT 3: Minimum volume per 5-minute bar
+      minBarVolume: number; // 5000 = minimum volume
 
-      // Minimum upper shadow to body ratio
-      // This ensures we only catch true rejection candles with significant wicks
-      // Example: 1.5 means upper shadow must be at least 1.5x the body size
-      minShadowToBodyRatio: number; // 1.5 = upper shadow must be 1.5x body
+      // REQUIREMENT 4: Maximum volume (filters data errors)
+      maxBarVolume: number; // 50000000 = 50M shares max
 
-      // HOD proximity requirements
-      // Maximum distance from HOD for the candle HIGH (allows near-misses)
+      // REQUIREMENT 5: Upper shadow to body ratio
+      // This ensures a true "topping tail" with significant upper wick
+      // Upper shadow = distance from high to top of body
+      // Body = |open - close|
+      // Example: 1.5 means upper shadow ≥ 1.5x body size
+      // If body=0.20, upper shadow must be ≥0.30
+      minShadowToBodyRatio: number; // 1.5 = upper shadow ≥ 1.5x body
+
+      // REQUIREMENT 6: HOD Break Requirement
+      // true = candle HIGH must touch/exceed HOD (strict - recommended)
+      // false = candle HIGH can be within maxHighDistanceFromHODPercent (loose)
+      requireStrictHODBreak: boolean; // true = must break HOD
+
+      // REQUIREMENT 7: Maximum distance from HOD for candle HIGH (only if requireStrictHODBreak = false)
       // Example: 2.0 means high can be up to 2% below OR above HOD
       maxHighDistanceFromHODPercent: number; // 2.0 = within 2% of HOD
 
-      // Maximum distance from HOD for the candle CLOSE (prevents low closes)
-      // Example: 10.0 means close must be within 10% below HOD
-      // This prevents spikes to HOD that close way below
-      maxCloseDistanceFromHODPercent: number; // 10.0 = close within 10% of HOD
+      // REQUIREMENT 8: Maximum distance from HOD for candle CLOSE
+      // This prevents candles that spike to HOD but close way below (no room to drop)
+      // Example: 5.0 means close must be within 5% below HOD
+      // This ensures there's still room for the stock to fall after the signal
+      maxCloseDistanceFromHODPercent: number; // 5.0 = close within 5% of HOD
 
-      // REQUIREMENTS:
-      // 1. Candle high must be within maxHighDistanceFromHODPercent of HOD
-      // 2. Candle close must be within maxCloseDistanceFromHODPercent of HOD
-      // 3. Must close at least minClosePercent% down from candle high
-      // 4. Upper shadow must be at least minShadowToBodyRatio times the body size
-      // 5. Allows both red and green candles
+      // SUMMARY - A valid 5m topping tail must:
+      // 1. Break HOD with candle high (if requireStrictHODBreak = true)
+      // 2. Close at least minClosePercent% down from its high (rejection)
+      // 3. Have upper shadow at least minShadowToBodyRatio times body size (long wick)
+      // 4. Close within maxCloseDistanceFromHODPercent of HOD (not too far below)
+      // 5. Meet volume requirements (minBarVolume to maxBarVolume)
+      // 6. Optionally be red (if mustCloseRed = true)
     };
 
     // Green candle run patterns (5-minute)
@@ -230,12 +248,14 @@ export const defaultScannerConfig: ScannerConfig = {
     },
 
     toppingTail5m: {
-      minClosePercent: 50.0, // 50% down the candle
+      minClosePercent: 20.0, // 60% down the candle
       mustCloseRed: false,
       minBarVolume: 5000,
-      minShadowToBodyRatio: 0.5, // Upper shadow must be at least 1.2x the body
-      maxHighDistanceFromHODPercent: 10.0, // High must be within 2% of HOD
-      maxCloseDistanceFromHODPercent: 10.0, // Close must be within 10% of HOD
+      maxBarVolume: 50000000, // 50M shares max to filter data errors
+      minShadowToBodyRatio: 0, // Upper shadow must be at least 0.5x the body
+      requireStrictHODBreak: true, // Allow proximity to HOD instead of strict break
+      maxHighDistanceFromHODPercent: 50.0, // High can be within 2% of HOD
+      maxCloseDistanceFromHODPercent: 50.0, // Close must be within 10% of HOD
     },
 
     greenRun: {

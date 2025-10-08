@@ -17,7 +17,7 @@ interface Trade {
   entryPrice: number;
   exitPrice: number;
   exitTime: string; // Time of exit
-  exitStrategy: 'marketOpen' | 'firstGreen5m'; // How we exited
+  exitStrategy: 'marketOpen' | 'firstGreen5m' | 'firstBreakPrevHigh5m' | 'firstGreenOrBreakPrevHigh5m'; // How we exited
   pnl: number;
   pnlPercent: number;
   isWin: boolean;
@@ -56,8 +56,8 @@ const Backtesting: React.FC<BacktestingProps> = ({ gapScanner }) => {
   const [results, setResults] = useState<BacktestResults | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Exit strategy: 'marketOpen' or 'firstGreen5m'
-  const [exitStrategy, setExitStrategy] = useState<'marketOpen' | 'firstGreen5m'>('marketOpen');
+  // Exit strategy
+  const [exitStrategy, setExitStrategy] = useState<'marketOpen' | 'firstGreen5m' | 'firstBreakPrevHigh5m' | 'firstGreenOrBreakPrevHigh5m'>('marketOpen');
 
   // Entry time range (24-hour format)
   const [entryStartTime, setEntryStartTime] = useState('09:30');
@@ -227,8 +227,7 @@ const Backtesting: React.FC<BacktestingProps> = ({ gapScanner }) => {
                 minutesToExit = Math.round((exitTime.getTime() - signalTime.getTime()) / (1000 * 60));
 
               } else {
-                // Exit at first green 5m candle after entry
-                // Get 5-minute bars for the same day
+                // Intraday exit strategies - get 5-minute bars
                 const bars5m = await gapScanner['get5MinuteBars'](
                   alert.symbol,
                   new Date(date + 'T00:00:00'),
@@ -240,17 +239,27 @@ const Backtesting: React.FC<BacktestingProps> = ({ gapScanner }) => {
                   continue;
                 }
 
-                // Find first green 5m candle AFTER entry time
                 const signalTime = new Date(alert.timestamp);
                 let foundExit = false;
 
-                for (const bar of bars5m) {
-                  const barTime = new Date(bar.t);
-
-                  // Must be after entry
-                  if (barTime.getTime() <= signalTime.getTime()) {
-                    continue;
+                // Find the index where we entered (first bar after signal)
+                let entryBarIndex = -1;
+                for (let i = 0; i < bars5m.length; i++) {
+                  if (new Date(bars5m[i].t).getTime() > signalTime.getTime()) {
+                    entryBarIndex = i;
+                    break;
                   }
+                }
+
+                if (entryBarIndex === -1) {
+                  console.warn(`No bars after entry for ${alert.symbol} on ${date}`);
+                  continue;
+                }
+
+                // Iterate through bars after entry
+                for (let i = entryBarIndex; i < bars5m.length; i++) {
+                  const bar = bars5m[i];
+                  const barTime = new Date(bar.t);
 
                   // Check if it's a completed 5-minute candle (aligned to 0 or 5 minutes)
                   const etBarTime = new Date(barTime.toLocaleString("en-US", {timeZone: "America/New_York"}));
@@ -262,10 +271,34 @@ const Backtesting: React.FC<BacktestingProps> = ({ gapScanner }) => {
                     continue; // Skip misaligned bars
                   }
 
-                  // Check if green (close > open)
-                  const isGreen = bar.c > bar.o;
+                  // Check exit conditions based on strategy
+                  let shouldExit = false;
 
-                  if (isGreen) {
+                  if (exitStrategy === 'firstGreen5m') {
+                    // Exit on first green candle
+                    const isGreen = bar.c > bar.o;
+                    shouldExit = isGreen;
+
+                  } else if (exitStrategy === 'firstBreakPrevHigh5m') {
+                    // Exit when candle breaks previous candle's high
+                    if (i > entryBarIndex) {
+                      const prevBar = bars5m[i - 1];
+                      const breaksPrevHigh = bar.h > prevBar.h;
+                      shouldExit = breaksPrevHigh;
+                    }
+
+                  } else if (exitStrategy === 'firstGreenOrBreakPrevHigh5m') {
+                    // Exit on whichever happens first: green candle OR breaks previous high
+                    const isGreen = bar.c > bar.o;
+                    let breaksPrevHigh = false;
+                    if (i > entryBarIndex) {
+                      const prevBar = bars5m[i - 1];
+                      breaksPrevHigh = bar.h > prevBar.h;
+                    }
+                    shouldExit = isGreen || breaksPrevHigh;
+                  }
+
+                  if (shouldExit) {
                     exitPrice = bar.c;
                     exitTime = barTime;
                     minutesToExit = Math.round((barTime.getTime() - signalTime.getTime()) / (1000 * 60));
@@ -275,7 +308,7 @@ const Backtesting: React.FC<BacktestingProps> = ({ gapScanner }) => {
                 }
 
                 if (!foundExit) {
-                  console.warn(`No green 5m candle found after entry for ${alert.symbol} on ${date}`);
+                  console.warn(`No exit found for ${exitStrategy} for ${alert.symbol} on ${date}`);
                   continue; // Skip this trade if no exit found
                 }
               }
@@ -413,7 +446,7 @@ const Backtesting: React.FC<BacktestingProps> = ({ gapScanner }) => {
             <span className="config-label">5m TT Shadow:</span> {config.patterns.toppingTail5m.minShadowToBodyRatio}x+
           </span>
           <span className="config-item">
-            <span className="config-label">5m TT HOD:</span> {config.patterns.toppingTail5m.maxHighDistanceFromHODPercent}% max
+            <span className="config-label">5m TT HOD:</span> {config.patterns.toppingTail5m.requireStrictHODBreak ? 'Strict Break' : `${config.patterns.toppingTail5m.maxHighDistanceFromHODPercent}% max`}
           </span>
           <span className="config-item">
             <span className="config-label">Green Run:</span> {config.patterns.greenRun.minConsecutiveGreen}+ candles
@@ -471,12 +504,14 @@ const Backtesting: React.FC<BacktestingProps> = ({ gapScanner }) => {
           <select
             id="exit-strategy"
             value={exitStrategy}
-            onChange={(e) => setExitStrategy(e.target.value as 'marketOpen' | 'firstGreen5m')}
+            onChange={(e) => setExitStrategy(e.target.value as 'marketOpen' | 'firstGreen5m' | 'firstBreakPrevHigh5m' | 'firstGreenOrBreakPrevHigh5m')}
             disabled={isRunning}
             className="control-select"
           >
             <option value="marketOpen">Close at Market Open</option>
             <option value="firstGreen5m">First Green 5m Candle</option>
+            <option value="firstBreakPrevHigh5m">First Break Prev High 5m</option>
+            <option value="firstGreenOrBreakPrevHigh5m">First Green OR Break Prev High 5m</option>
           </select>
         </div>
 
@@ -605,7 +640,10 @@ const Backtesting: React.FC<BacktestingProps> = ({ gapScanner }) => {
                       <td>{trade.entryTime}</td>
                       <td>{trade.exitTime}</td>
                       <td className="exit-strategy">
-                        {trade.exitStrategy === 'marketOpen' ? 'Market Open' : '1st Green 5m'}
+                        {trade.exitStrategy === 'marketOpen' ? 'Market Open' :
+                         trade.exitStrategy === 'firstGreen5m' ? '1st Green 5m' :
+                         trade.exitStrategy === 'firstBreakPrevHigh5m' ? '1st Break Prev High' :
+                         '1st Green/Break High'}
                       </td>
                       <td>{trade.minutesToExit}m</td>
                       <td>{trade.volume.toLocaleString()}</td>

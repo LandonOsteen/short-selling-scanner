@@ -1087,7 +1087,7 @@ export class GapScanner {
         });
       }
 
-      // Find qualifying gap stocks
+      // Find qualifying gap stocks (common stocks only)
       const qualifyingStocks: GapStock[] = [];
 
       for (const bar of groupedData.results) {
@@ -1110,6 +1110,14 @@ export class GapScanner {
         if (gapPercent >= this.config.gapCriteria.minGapPercentage &&
             bar.o >= this.config.gapCriteria.minPrice &&
             bar.o <= this.config.gapCriteria.maxPrice) {
+
+          // Check if it's a common stock (type: "CS")
+          const isCommonStock = await this.isCommonStock(symbol, dateString);
+          if (!isCommonStock) {
+            console.log(`🚫 FILTERED OUT: ${symbol} - Not a common stock`);
+            continue;
+          }
+
           qualifyingStocks.push({
             symbol,
             gapPercent,
@@ -1138,6 +1146,46 @@ export class GapScanner {
     } catch (error) {
       console.error('Failed to fetch historical gap stocks:', error);
       throw error;
+    }
+  }
+
+  // Check if a ticker is a common stock (type: "CS")
+  private async isCommonStock(symbol: string, dateString: string): Promise<boolean> {
+    if (!this.polygonApiKey) {
+      console.warn(`No Polygon API key - cannot verify ticker type for ${symbol}`);
+      return true; // Default to allowing if we can't check
+    }
+
+    try {
+      // Use v3 ticker details endpoint to get ticker information
+      const url = `https://api.polygon.io/v3/reference/tickers/${symbol}?date=${dateString}&apikey=${this.polygonApiKey}`;
+
+      const response = await fetch(url);
+
+      if (!response.ok) {
+        console.warn(`Failed to fetch ticker details for ${symbol}: ${response.status}`);
+        return true; // Default to allowing if we can't check
+      }
+
+      const data = await response.json();
+
+      if (data.results && data.results.type) {
+        const tickerType = data.results.type;
+        const isCS = tickerType === 'CS';
+
+        if (!isCS) {
+          console.log(`📋 ${symbol} ticker type: ${tickerType} (not CS)`);
+        }
+
+        return isCS;
+      }
+
+      // If no type info, default to allowing
+      return true;
+
+    } catch (error) {
+      console.warn(`Error checking ticker type for ${symbol}:`, error);
+      return true; // Default to allowing on error
     }
   }
 
@@ -1789,19 +1837,40 @@ export class GapScanner {
     // bars5m are native 5-minute bars from Polygon - no aggregation needed!
     const bar = bars5m[index];
 
-    // RED CANDLE REQUIREMENT REMOVED - allowing both red and green topping tails
-    // The key is that it touches HOD and closes significantly down from the high (70%+)
-    // This captures powerful rejection candles regardless of open/close relationship
+    // TOPPING TAIL DEFINITION:
+    // A 5-minute candle that breaks HOD, gets rejected, and closes with a long upper wick
+    //
+    // VALIDATION CHECKS (in order):
+    // 1. HOD Break: Candle high must break/touch HOD (or be within X% if loose mode)
+    // 2. Close Proximity to HOD: Close must be within Y% below HOD (ensures rejection near top)
+    // 3. Color Requirement: Must close red if mustCloseRed=true (optional)
+    // 4. Upper Shadow: Must have significant upper wick (shadow ≥ ratio × body)
+    // 5. Close Position: Must close at least X% down from candle high (rejection strength)
+    // 6. Volume: Must meet minimum volume requirement
 
-    // CHECK 1: Candle HIGH must touch or break HOD (strict requirement)
     console.log(`🔍 ${symbol} at ${this.formatETTime(timestamp)} - Checking topping tail: bar.h=${bar.h.toFixed(2)}, HOD=${hod.toFixed(2)}, bar.c=${bar.c.toFixed(2)}`);
 
-    if (bar.h < hod) {
-      console.log(`⏭️  ${symbol} - High ${bar.h.toFixed(2)} does not break HOD ${hod.toFixed(2)} (${((bar.h - hod) / hod * 100).toFixed(2)}% below)`);
-      return null;
-    }
+    // CHECK 1: HOD proximity check (strict or loose based on config)
+    const requireStrictBreak = this.config.patterns.toppingTail5m.requireStrictHODBreak;
+    const maxHighDistance = this.config.patterns.toppingTail5m.maxHighDistanceFromHODPercent;
 
-    console.log(`✅ ${symbol} - High proximity check passed: ${bar.h.toFixed(2)} breaks/touches HOD ${hod.toFixed(2)}`);
+    if (requireStrictBreak) {
+      // STRICT: Candle HIGH must touch or break HOD
+      if (bar.h < hod) {
+        console.log(`⏭️  ${symbol} - High ${bar.h.toFixed(2)} does not break HOD ${hod.toFixed(2)} (${((bar.h - hod) / hod * 100).toFixed(2)}% below) [STRICT MODE]`);
+        return null;
+      }
+      console.log(`✅ ${symbol} - High proximity check passed: ${bar.h.toFixed(2)} breaks/touches HOD ${hod.toFixed(2)} [STRICT MODE]`);
+    } else {
+      // LOOSE: Candle HIGH can be within X% of HOD
+      const highDistanceFromHOD = ((hod - bar.h) / hod) * 100; // Positive = below HOD, Negative = above HOD
+
+      if (Math.abs(highDistanceFromHOD) > maxHighDistance) {
+        console.log(`⏭️  ${symbol} - High ${bar.h.toFixed(2)} is ${Math.abs(highDistanceFromHOD).toFixed(2)}% from HOD ${hod.toFixed(2)} (max: ${maxHighDistance}%) [LOOSE MODE]`);
+        return null;
+      }
+      console.log(`✅ ${symbol} - High proximity check passed: ${bar.h.toFixed(2)} is ${Math.abs(highDistanceFromHOD).toFixed(2)}% from HOD ${hod.toFixed(2)} (max: ${maxHighDistance}%) [LOOSE MODE]`);
+    }
 
     // CHECK 2: Candle CLOSE must be within Y% below HOD (prevents low closes)
     // This catches cases where candle spikes to HOD but closes way below
@@ -1825,6 +1894,12 @@ export class GapScanner {
     const isGreen = bar.c > bar.o;
     const candleColor = isRed ? 'red' : isGreen ? 'green' : 'doji';
 
+    // CHECK 3: Must close red if configured
+    if (this.config.patterns.toppingTail5m.mustCloseRed && !isRed) {
+      console.log(`⏭️  ${symbol} - Candle must close red but is ${candleColor} (O=${bar.o.toFixed(2)}, C=${bar.c.toFixed(2)})`);
+      return null;
+    }
+
     // Calculate upper shadow and body size
     // Upper shadow = distance from high to top of body
     // Body = distance between open and close
@@ -1843,34 +1918,64 @@ export class GapScanner {
 
     console.log(`✅ ${symbol} - Upper shadow requirement met: shadow=${upperShadow.toFixed(3)}, body=${body.toFixed(3)}, ratio=${shadowToBodyRatio.toFixed(2)}x (min: ${minRatio}x)`);
 
-    // Calculate where the close is relative to the total range
+    // CHECK 4: Calculate where the close is relative to the total range
     // closePercent = how far down from the high the close is (as a percentage)
     // If close is at low, closePercent = 100%
     // If close is at high, closePercent = 0%
     const closeDistanceFromHigh = bar.h - bar.c;
     const closePercent = (closeDistanceFromHigh / totalRange) * 100;
 
-    // Check if it meets topping tail criteria (70% close means close is at least 70% down from high)
-    const meetsCloseRequirement = closePercent >= this.config.patterns.toppingTail5m.minClosePercent;
+    const minClosePercent = this.config.patterns.toppingTail5m.minClosePercent;
+    const meetsCloseRequirement = closePercent >= minClosePercent;
+
+    if (!meetsCloseRequirement) {
+      console.log(`⏭️  ${symbol} - Close requirement not met: ${closePercent.toFixed(1)}% down from high (need ${minClosePercent}%)`);
+      return null;
+    }
+
+    console.log(`✅ ${symbol} - Close requirement met: ${closePercent.toFixed(1)}% down from high (need ${minClosePercent}%)`);
+
+    // CHECK 5: Volume requirement
     const meetsVolumeRequirement = bar.v >= this.config.patterns.toppingTail5m.minBarVolume;
+
+    if (!meetsVolumeRequirement) {
+      console.log(`⏭️  ${symbol} - Volume requirement not met: ${bar.v.toLocaleString()} < ${this.config.patterns.toppingTail5m.minBarVolume.toLocaleString()}`);
+      return null;
+    }
 
     if (meetsCloseRequirement && meetsVolumeRequirement) {
       const alertVolume = cumulativeVolume || bar.v;
 
-      // Validation for volume numbers
-      if (alertVolume > 50000000) {
-        console.error(`🚨 BLOCKING ALERT: ${symbol} volume ${(alertVolume/1000000).toFixed(1)}M is unrealistically high - likely data error`);
+      // Validation for volume numbers using config
+      const maxVolume = this.config.patterns.toppingTail5m.maxBarVolume;
+      if (alertVolume > maxVolume) {
+        console.error(`🚨 BLOCKING ALERT: ${symbol} volume ${(alertVolume/1000000).toFixed(1)}M exceeds max ${(maxVolume/1000000).toFixed(1)}M - likely data error`);
         return null;
       }
 
-      console.log(`✅ 5m Topping Tail detected: ${symbol} at ${this.formatETTime(timestamp)} - O=${bar.o.toFixed(2)}, H=${bar.h.toFixed(2)}, L=${bar.l.toFixed(2)}, C=${bar.c.toFixed(2)}, ${closePercent.toFixed(0)}% close down, ${candleColor} candle, ${shadowToBodyRatio.toFixed(2)}x shadow/body, broke HOD ${hod.toFixed(2)}`);
+      // Calculate high distance from HOD for display
+      const highDistanceFromHOD = ((hod - bar.h) / hod) * 100; // Positive = below HOD, Negative = above HOD
+      const highDistanceDisplay = bar.h >= hod
+        ? `+${Math.abs(highDistanceFromHOD).toFixed(2)}%`
+        : `-${Math.abs(highDistanceFromHOD).toFixed(2)}%`;
+
+      const hodDescription = requireStrictBreak ? 'broke HOD' : `near HOD (${((Math.abs(hod - bar.h) / hod) * 100).toFixed(1)}%)`;
+
+      console.log(`✅ 5m TOPPING TAIL DETECTED: ${symbol} at ${this.formatETTime(timestamp)}`);
+      console.log(`   📊 OHLC: O=${bar.o.toFixed(2)} H=${bar.h.toFixed(2)} L=${bar.l.toFixed(2)} C=${bar.c.toFixed(2)}`);
+      console.log(`   ✓ HOD Break: ${hodDescription} (HOD=${hod.toFixed(2)})`);
+      console.log(`   ✓ Close Distance from HOD: ${closeDistanceFromHOD.toFixed(1)}% (max ${maxCloseDistance}%)`);
+      console.log(`   ✓ Close Position: ${closePercent.toFixed(1)}% down from high (min ${minClosePercent}%)`);
+      console.log(`   ✓ Shadow/Body Ratio: ${shadowToBodyRatio.toFixed(2)}x (min ${minRatio}x)`);
+      console.log(`   ✓ Candle Color: ${candleColor}`);
+      console.log(`   ✓ Volume: ${bar.v.toLocaleString()}`);
 
       return {
         id: `${symbol}-${timestamp.getTime()}-${index}-ToppingTail5m`,
         timestamp: timestamp.getTime(),
         symbol,
         type: 'ToppingTail5m',
-        detail: `5m topping tail at HOD $${hod.toFixed(2)}: ${closePercent.toFixed(0)}% close down (${candleColor}), ${shadowToBodyRatio.toFixed(1)}x shadow/body, broke HOD, close ${bar.c.toFixed(2)}`,
+        detail: `5m TT @ HOD $${hod.toFixed(2)} | H:${highDistanceDisplay} C:${closeDistanceFromHOD.toFixed(1)}% below | ${closePercent.toFixed(0)}% down from high | ${shadowToBodyRatio.toFixed(1)}x shadow/body | ${candleColor} | Close $${bar.c.toFixed(2)}`,
         price: bar.c,
         volume: alertVolume,
         gapPercent: gapPercent,
