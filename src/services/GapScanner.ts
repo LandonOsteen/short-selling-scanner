@@ -98,8 +98,7 @@ export class GapScanner {
         this.config,
         {
           detectToppingTail5m: this.detectToppingTail5m.bind(this),
-          detectGreenRunReject: this.detectGreenRunReject.bind(this),
-          detectTestSignal: this.detectTestSignal.bind(this)
+          detectGreenRunReject: this.detectGreenRunReject.bind(this)
         }
       );
       console.log('✅ WebSocket scanner initialized');
@@ -1619,7 +1618,6 @@ export class GapScanner {
         const patterns = [
           this.detectToppingTail5m(symbol, bars5m, index, currentHOD, barTimestamp, cumulativeVolumeUpToNow, gapPercent),
           this.detectGreenRunReject(symbol, bars5m, index, currentHOD, barTimestamp, cumulativeVolumeUpToNow, gapPercent),
-          this.detectTestSignal(symbol, bars5m, index, currentHOD, barTimestamp, cumulativeVolumeUpToNow, gapPercent),
         ];
 
 
@@ -1651,7 +1649,7 @@ export class GapScanner {
     }
 
     try {
-      const url = `https://api.polygon.io/v2/aggs/ticker/${symbol}/range/1/minute/${dateString}/${dateString}?adjusted=true&sort=asc&limit=${this.config.api.aggregatesLimit}&apikey=${this.polygonApiKey}`;
+      const url = `https://api.polygon.io/v2/aggs/ticker/${symbol}/range/1/minute/${dateString}/${dateString}?adjusted=true&sort=asc&limit=${this.config.api.aggregatesLimit}&include_extended_hours=true&apikey=${this.polygonApiKey}`;
 
       const data = await this.cachedFetch(url);
 
@@ -1846,35 +1844,6 @@ export class GapScanner {
     return times;
   }
 
-  private getPatternTypeForTime(alertTime: Date): PatternType {
-    const minute = alertTime.getMinutes();
-
-    // 5-minute patterns (ToppingTail5m) only trigger on 5-minute intervals (0, 5, 10, 15, etc.)
-    const is5MinuteInterval = minute % 5 === 0;
-
-    const oneMinutePatterns: PatternType[] = [
-      'HODBreakCloseUnder'
-    ];
-
-    const fiveMinutePatterns: PatternType[] = [
-      'HODBreakCloseUnder'
-    ];
-
-    // Use 5-minute patterns on 5-minute intervals, otherwise use 1-minute patterns
-    const availablePatterns = is5MinuteInterval && Math.random() > 0.5
-      ? fiveMinutePatterns
-      : oneMinutePatterns;
-
-    return availablePatterns[Math.floor(Math.random() * availablePatterns.length)];
-  }
-
-  private getRandomPatternType(): PatternType {
-    const patterns: PatternType[] = [
-      'HODBreakCloseUnder'
-    ];
-    return patterns[Math.floor(Math.random() * patterns.length)];
-  }
-
   // Get market open price for a specific symbol and date
   async getMarketOpenPrice(symbol: string, dateString: string): Promise<number> {
     if (!this.polygonApiKey) {
@@ -1911,7 +1880,7 @@ export class GapScanner {
     const startDate = startTime.toISOString().split('T')[0]; // YYYY-MM-DD
     const endDate = endTime.toISOString().split('T')[0];
 
-    const url = `https://api.polygon.io/v2/aggs/ticker/${symbol}/range/5/minute/${startDate}/${endDate}?adjusted=true&sort=asc&limit=${this.config.api.aggregatesLimit}&apikey=${this.polygonApiKey}`;
+    const url = `https://api.polygon.io/v2/aggs/ticker/${symbol}/range/5/minute/${startDate}/${endDate}?adjusted=true&sort=asc&limit=${this.config.api.aggregatesLimit}&include_extended_hours=true&apikey=${this.polygonApiKey}`;
 
     try {
       const response = await fetch(url);
@@ -1985,99 +1954,6 @@ export class GapScanner {
 
 
   // Pattern detection methods
-
-  private detectHODBreakCloseUnder(symbol: string, bars: PolygonBar[], index: number, hod: number, timestamp: Date, cumulativeVolume?: number, gapPercent?: number): Alert | null {
-    if (index < 1) return null; // Need previous bar
-
-    const currentBar = bars[index];
-    const prevBar = bars[index - 1];
-
-    // Use configuration-based thresholds instead of hardcoded values
-    const nearHodThreshold = 1 - (this.config.patterns.hod.nearHodDistancePercent / 100);
-    const maxHodThreshold = 1 - (this.config.patterns.hod.maxHodDistancePercent / 100);
-
-    // Check if previous bar broke HOD (within near threshold) and current bar closed under (within max threshold)
-    const prevBarNearHod = prevBar.h >= hod * nearHodThreshold;
-    const currentBarWithinMaxDistance = currentBar.c >= hod * maxHodThreshold;
-
-    if (prevBarNearHod && currentBar.c < prevBar.h && currentBarWithinMaxDistance) {
-      const alertVolume = cumulativeVolume || currentBar.v;
-
-      // Additional validation for volume numbers
-      if (alertVolume > 50000000) { // 50M shares is extremely high
-        console.error(`🚨 BLOCKING ALERT: ${symbol} volume ${(alertVolume/1000000).toFixed(1)}M is unrealistically high - likely data error`);
-        return null;
-      }
-
-      return {
-        id: `${symbol}-${currentBar.t}-${index}-HODBreakCloseUnder`,
-        timestamp: timestamp.getTime(),
-        symbol,
-        type: 'HODBreakCloseUnder',
-        detail: `Broke HOD ${hod.toFixed(2)}, closed under at ${currentBar.c.toFixed(2)}`,
-        price: currentBar.c,
-        volume: alertVolume,
-        gapPercent: gapPercent,
-        historical: true
-      };
-    }
-
-    return null;
-  }
-
-  private detectToppingTail1m(symbol: string, bars: PolygonBar[], index: number, hod: number, timestamp: Date, cumulativeVolume?: number, gapPercent?: number): Alert | null {
-    const bar = bars[index];
-
-    // Must close red
-    if (!this.config.patterns.toppingTail.mustCloseRed || bar.c >= bar.o) {
-      return null;
-    }
-
-    // Must touch or break the HOD (0% distance requirement)
-    if (bar.h < hod) {
-      return null; // Must be at or above HOD
-    }
-
-    // Calculate candle metrics
-    const totalRange = bar.h - bar.l;
-    if (totalRange === 0) return null; // Avoid division by zero
-
-    const bodySize = Math.abs(bar.c - bar.o);
-    const upperWick = bar.h - Math.max(bar.o, bar.c);
-
-    // Calculate percentages
-    const upperWickPercent = (upperWick / totalRange) * 100;
-    const bodyPercent = (bodySize / totalRange) * 100;
-
-    // Check if it meets topping tail criteria
-    const meetsUpperWickRequirement = upperWickPercent >= this.config.patterns.toppingTail.minUpperWickPercent;
-    const meetsBodyRequirement = bodyPercent <= this.config.patterns.toppingTail.maxBodyPercent;
-    const meetsVolumeRequirement = bar.v >= this.config.patterns.toppingTail.minBarVolume;
-
-    if (meetsUpperWickRequirement && meetsBodyRequirement && meetsVolumeRequirement) {
-      const alertVolume = cumulativeVolume || bar.v;
-
-      // Validation for volume numbers
-      if (alertVolume > 50000000) {
-        console.error(`🚨 BLOCKING ALERT: ${symbol} volume ${(alertVolume/1000000).toFixed(1)}M is unrealistically high - likely data error`);
-        return null;
-      }
-
-      return {
-        id: `${symbol}-${bar.t}-${index}-ToppingTail1m`,
-        timestamp: timestamp.getTime(),
-        symbol,
-        type: 'ToppingTail1m',
-        detail: `1m topping tail at HOD $${hod.toFixed(2)}: ${upperWickPercent.toFixed(0)}% upper wick, red close at ${bar.c.toFixed(2)}`,
-        price: bar.c,
-        volume: alertVolume,
-        gapPercent: gapPercent,
-        historical: true
-      };
-    }
-
-    return null;
-  }
 
   private detectToppingTail5m(symbol: string, bars5m: PolygonBar[], index: number, hod: number, timestamp: Date, cumulativeVolume?: number, gapPercent?: number): Alert | null {
     // bars5m are native 5-minute bars from Polygon - no aggregation needed!
@@ -2391,50 +2267,6 @@ export class GapScanner {
       type: 'GreenRunReject',
       detail: `${consecutiveGreen} green 5m candles (+${totalGainPercent.toFixed(1)}%) near HOD (${distanceFromHOD.toFixed(1)}% from HOD), red rejection at ${currentBar.c.toFixed(2)}`,
       price: currentBar.c,
-      volume: alertVolume,
-      gapPercent: gapPercent,
-      historical: true
-    };
-  }
-
-  private detectTestSignal(symbol: string, bars5m: PolygonBar[], index: number, hod: number, timestamp: Date, cumulativeVolume?: number, gapPercent?: number): Alert | null {
-    // Simple test signal to verify scanner is working
-    // Fires on every new 5-minute candle for stocks meeting basic requirements
-
-    // Check if test signals are enabled
-    if (!this.config.development.enableTestSignal) {
-      return null;
-    }
-
-    const bar = bars5m[index];
-
-    // Basic validation: ensure bar exists and has valid data
-    if (!bar || bar.c <= 0 || bar.v <= 0) {
-      return null;
-    }
-
-    // Verify this is a properly aligned 5-minute bar
-    const barTime = new Date(bar.t);
-    const etBarTime = new Date(barTime.toLocaleString("en-US", {timeZone: "America/New_York"}));
-    const minutes = etBarTime.getMinutes();
-    const seconds = etBarTime.getSeconds();
-    const isProperlyAligned = minutes % 5 === 0 && seconds === 0;
-
-    if (!isProperlyAligned) {
-      return null;
-    }
-
-    const alertVolume = cumulativeVolume || bar.v;
-
-    console.log(`🧪 TEST SIGNAL: ${symbol} at ${this.formatETTime(timestamp)} - New 5m candle detected | Price: $${bar.c.toFixed(2)} | Volume: ${(alertVolume/1000).toFixed(1)}k`);
-
-    return {
-      id: `${symbol}-${timestamp.getTime()}-${index}-TestSignal`,
-      timestamp: timestamp.getTime(),
-      symbol,
-      type: 'TestSignal',
-      detail: `Test signal - New 5m candle at ${this.formatETTime(timestamp)} | O:${bar.o.toFixed(2)} H:${bar.h.toFixed(2)} L:${bar.l.toFixed(2)} C:${bar.c.toFixed(2)}`,
-      price: bar.c,
       volume: alertVolume,
       gapPercent: gapPercent,
       historical: true

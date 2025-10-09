@@ -31,7 +31,7 @@ const HODBreakFeed: React.FC<HODBreakFeedProps> = ({
   const [symbolFilter, setSymbolFilter] = useState('');
   const [priceRange, setPriceRange] = useState({ min: '', max: '' });
   const [showFilters, setShowFilters] = useState(false);
-  const [patternFilter, setPatternFilter] = useState<'all' | 'ToppingTail5m' | 'GreenRunReject' | 'TestSignal'>('all');
+  const [patternFilter, setPatternFilter] = useState<'all' | 'ToppingTail5m' | 'GreenRunReject'>('all');
   const [showSymbols, setShowSymbols] = useState(false);
   const prevAlertsLength = useRef(0);
   const prevAlertIds = useRef(new Set<string>());
@@ -106,16 +106,10 @@ const HODBreakFeed: React.FC<HODBreakFeedProps> = ({
   // Helper to get pattern display name
   const getPatternDisplayName = (type: string) => {
     switch (type) {
-      case 'HODBreakCloseUnder':
-        return 'HOD Break and Close Under';
-      case 'ToppingTail1m':
-        return '1-Minute Topping Tail';
       case 'ToppingTail5m':
         return '5-Minute Topping Tail';
       case 'GreenRunReject':
         return 'Green Run Rejection';
-      case 'TestSignal':
-        return 'Test Signal';
       default:
         return type;
     }
@@ -179,16 +173,10 @@ const HODBreakFeed: React.FC<HODBreakFeedProps> = ({
   // Helper to get pattern badge class
   const getPatternBadgeClass = (type: string) => {
     switch (type) {
-      case 'HODBreakCloseUnder':
-        return 'pattern-badge-hod';
-      case 'ToppingTail1m':
-        return 'pattern-badge-1m';
       case 'ToppingTail5m':
         return 'pattern-badge-5m';
       case 'GreenRunReject':
         return 'pattern-badge-green';
-      case 'TestSignal':
-        return 'pattern-badge-test';
       default:
         return 'pattern-badge';
     }
@@ -197,16 +185,10 @@ const HODBreakFeed: React.FC<HODBreakFeedProps> = ({
   // Helper to get pattern badge text
   const getPatternBadgeText = (type: string) => {
     switch (type) {
-      case 'HODBreakCloseUnder':
-        return 'HOD BREAK';
-      case 'ToppingTail1m':
-        return 'TOPPING TAIL 1M';
       case 'ToppingTail5m':
         return 'TOPPING TAIL 5M';
       case 'GreenRunReject':
         return 'GREEN RUN REJECT';
-      case 'TestSignal':
-        return 'TEST SIGNAL';
       default:
         return type;
     }
@@ -344,7 +326,6 @@ const HODBreakFeed: React.FC<HODBreakFeedProps> = ({
                 <option value="all">All Patterns</option>
                 <option value="ToppingTail5m">5m Topping Tail</option>
                 <option value="GreenRunReject">Green Run Rejection</option>
-                <option value="TestSignal">Test Signal</option>
               </select>
             </div>
             <div className="filter-group">

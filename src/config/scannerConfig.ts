@@ -229,8 +229,8 @@ export interface ScannerConfig {
  */
 export const defaultScannerConfig: ScannerConfig = {
   marketHours: {
-    startTime: '07:00', // 7:00 AM ET - Start scanning from pre-market
-    endTime: '18:00',
+    startTime: '04:00', // 4:00 AM ET - Full pre-market coverage
+    endTime: '20:00',   // 8:00 PM ET - Extended hours coverage
     timezone: 'America/New_York',
   },
 
@@ -261,9 +261,9 @@ export const defaultScannerConfig: ScannerConfig = {
       minBarVolume: 5000,
       maxBarVolume: 50000000, // 50M shares max to filter data errors
       minShadowToBodyRatio: 0, // Upper shadow must be at least 0.5x the body
-      requireStrictHODBreak: true, // Allow proximity to HOD instead of strict break
-      maxHighDistanceFromHODPercent: 20.0, // High can be within 20% of HOD
-      maxCloseDistanceFromHODPercent: 30.0, // Close must be within 30% of HOD
+      requireStrictHODBreak: true, // Strict mode: high must break HOD
+      maxHighDistanceFromHODPercent: 20.0, // High can be within 20% of HOD (only in loose mode)
+      maxCloseDistanceFromHODPercent: 15.0, // Close must be within 15% of HOD
     },
 
     greenRun: {

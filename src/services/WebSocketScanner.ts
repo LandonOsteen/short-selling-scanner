@@ -42,6 +42,7 @@ interface SymbolState {
   gapPercent: number;              // Gap percentage
   previousClose: number;           // Previous day close
   lastProcessed5MinBoundary: number; // Last 5-min boundary we processed
+  cumulativeVolume: number;        // Cumulative session volume from start time
 }
 
 export class WebSocketScanner {
@@ -62,7 +63,6 @@ export class WebSocketScanner {
   // Pattern detection methods (copied from GapScanner)
   private detectToppingTail5m: (symbol: string, bars5m: BarData[], index: number, hod: number, timestamp: Date, cumulativeVolume?: number, gapPercent?: number) => Alert | null;
   private detectGreenRunReject: (symbol: string, bars5m: BarData[], index: number, hod: number, timestamp: Date, cumulativeVolume?: number, gapPercent?: number) => Alert | null;
-  private detectTestSignal: (symbol: string, bars5m: BarData[], index: number, hod: number, timestamp: Date, cumulativeVolume?: number, gapPercent?: number) => Alert | null;
 
   constructor(
     apiKey: string,
@@ -70,14 +70,12 @@ export class WebSocketScanner {
     patternDetectors: {
       detectToppingTail5m: any;
       detectGreenRunReject: any;
-      detectTestSignal: any;
     }
   ) {
     this.apiKey = apiKey;
     this.config = config;
     this.detectToppingTail5m = patternDetectors.detectToppingTail5m;
     this.detectGreenRunReject = patternDetectors.detectGreenRunReject;
-    this.detectTestSignal = patternDetectors.detectTestSignal;
 
     console.log('🔌 WebSocketScanner initialized');
   }
@@ -168,7 +166,8 @@ export class WebSocketScanner {
         hod: data.currentPrice, // Initialize with current price
         gapPercent: data.gapPercent,
         previousClose: data.previousClose,
-        lastProcessed5MinBoundary: 0
+        lastProcessed5MinBoundary: 0,
+        cumulativeVolume: 0 // Will be calculated during backfill
       });
       console.log(`   ✅ ${data.symbol}: gap=${data.gapPercent.toFixed(1)}%, HOD=${data.currentPrice.toFixed(2)}`);
     }
@@ -181,6 +180,7 @@ export class WebSocketScanner {
   /**
    * Backfill recent 1-minute candles for all symbols
    * Fetches bars from market start time to ensure accurate HOD tracking
+   * CRITICAL: Also includes previous day's after-hours high (4-8 PM) to match REST behavior
    */
   private async backfillRecentCandles(symbols: string[]): Promise<void> {
     const now = new Date();
@@ -199,13 +199,20 @@ export class WebSocketScanner {
     // Get today's date string for API
     const dateString = `${etNow.getFullYear()}-${String(etNow.getMonth() + 1).padStart(2, '0')}-${String(etNow.getDate()).padStart(2, '0')}`;
 
+    // Get previous trading day for after-hours data
+    const previousDate = this.getPreviousTradingDay(dateString);
+
     console.log(`   Fetching 1-minute bars from market start (${this.config.marketHours.startTime} ET) to now`);
     console.log(`   Date: ${dateString}, Start time: ${marketStartET.toLocaleTimeString()}`);
+    console.log(`   Also fetching previous day after-hours data: ${previousDate}`);
 
     for (const symbol of symbols) {
       try {
-        // Fetch ALL 1-minute bars for today
-        const url = `https://api.polygon.io/v2/aggs/ticker/${symbol}/range/1/minute/${dateString}/${dateString}?adjusted=true&sort=asc&limit=50000&apikey=${this.apiKey}`;
+        // STEP 1: Fetch previous day's after-hours high (4-8 PM) to match REST behavior
+        const afterHoursHigh = await this.getAfterHoursHigh(symbol, previousDate);
+
+        // STEP 2: Fetch ALL 1-minute bars for today
+        const url = `https://api.polygon.io/v2/aggs/ticker/${symbol}/range/1/minute/${dateString}/${dateString}?adjusted=true&sort=asc&limit=50000&include_extended_hours=true&apikey=${this.apiKey}`;
 
         const response = await fetch(url);
         const data = await response.json();
@@ -233,11 +240,18 @@ export class WebSocketScanner {
         // Add to symbol's buffer
         symbolState.minuteCandles = recentBars;
 
-        // Update HOD from ALL backfilled data (this is the TRUE HOD since market start)
-        const maxHigh = recentBars.length > 0 ? Math.max(...recentBars.map((b: MinuteCandle) => b.high)) : symbolState.hod;
-        symbolState.hod = maxHigh;
+        // STEP 3: Calculate TRUE HOD including previous day after-hours
+        // This is CRITICAL to match REST behavior
+        const todayMaxHigh = recentBars.length > 0 ? Math.max(...recentBars.map((b: MinuteCandle) => b.high)) : 0;
+        symbolState.hod = Math.max(afterHoursHigh, todayMaxHigh);
 
-        console.log(`   ✅ ${symbol}: Loaded ${recentBars.length} 1-minute candles from ${this.config.marketHours.startTime} ET, TRUE HOD=${symbolState.hod.toFixed(2)}`);
+        // Calculate cumulative volume from all backfilled bars
+        // CRITICAL: This must match REST API behavior
+        symbolState.cumulativeVolume = recentBars.reduce((sum: number, bar: MinuteCandle) => sum + bar.volume, 0);
+
+        console.log(`   ✅ ${symbol}: Loaded ${recentBars.length} 1-minute candles from ${this.config.marketHours.startTime} ET`);
+        console.log(`      📈 HOD Calculation: Prev day after-hours=$${afterHoursHigh.toFixed(2)}, Today max=$${todayMaxHigh.toFixed(2)}, TRUE HOD=$${symbolState.hod.toFixed(2)}`);
+        console.log(`      📊 Cumulative Volume: ${(symbolState.cumulativeVolume/1000).toFixed(1)}K`);
 
         // Check if we can build a 5-minute candle immediately
         this.checkAndProcess5MinCandle(symbol, symbolState);
@@ -251,6 +265,70 @@ export class WebSocketScanner {
     }
 
     console.log(`   ✅ Backfill complete\n`);
+  }
+
+  /**
+   * Get previous trading day (handles weekends)
+   * Returns date string in YYYY-MM-DD format
+   */
+  private getPreviousTradingDay(dateString: string): string {
+    const [year, month, day] = dateString.split('-').map(Number);
+    const date = new Date(year, month - 1, day);
+
+    // Move back one day
+    date.setDate(date.getDate() - 1);
+
+    // If it's a weekend, go back to Friday
+    if (date.getDay() === 0) { // Sunday
+      date.setDate(date.getDate() - 2);
+    } else if (date.getDay() === 6) { // Saturday
+      date.setDate(date.getDate() - 1);
+    }
+
+    const year2 = date.getFullYear();
+    const month2 = String(date.getMonth() + 1).padStart(2, '0');
+    const day2 = String(date.getDate()).padStart(2, '0');
+    return `${year2}-${month2}-${day2}`;
+  }
+
+  /**
+   * Get after-hours high for previous day (4:00-8:00 PM ET)
+   * This ensures HOD includes previous day's extended hours trading
+   */
+  private async getAfterHoursHigh(symbol: string, date: string): Promise<number> {
+    try {
+      const url = `https://api.polygon.io/v2/aggs/ticker/${symbol}/range/1/minute/${date}/${date}?adjusted=true&sort=asc&limit=50000&include_extended_hours=true&apikey=${this.apiKey}`;
+
+      const response = await fetch(url);
+      if (!response.ok) {
+        return 0;
+      }
+
+      const data = await response.json();
+      if (!data.results || data.results.length === 0) {
+        return 0;
+      }
+
+      // Filter to after-hours (4:00-8:00 PM ET = 16-20 hours)
+      const afterHoursBars = data.results.filter((bar: any) => {
+        const barTime = new Date(bar.t);
+        const etTime = new Date(barTime.toLocaleString("en-US", {timeZone: "America/New_York"}));
+        const etHour = etTime.getHours() + etTime.getMinutes() / 60;
+        return etHour >= 16 && etHour < 20;
+      });
+
+      if (afterHoursBars.length === 0) {
+        return 0;
+      }
+
+      const afterHoursHigh = Math.max(...afterHoursBars.map((bar: any) => bar.h));
+      console.log(`      📊 ${symbol} After-hours high (${date} 4-8 PM): $${afterHoursHigh.toFixed(2)} from ${afterHoursBars.length} bars`);
+      return afterHoursHigh;
+
+    } catch (error) {
+      console.error(`   ⚠️  ${symbol}: Failed to fetch after-hours data for ${date}:`, error);
+      return 0;
+    }
   }
 
   /**
@@ -314,6 +392,9 @@ export class WebSocketScanner {
       symbolState.hod = agg.h;
       console.log(`📈 ${agg.sym} NEW HOD: ${oldHOD.toFixed(2)} → ${agg.h.toFixed(2)}`);
     }
+
+    // Update cumulative volume - CRITICAL for matching REST API
+    symbolState.cumulativeVolume += agg.v;
 
     // Add candle to buffer
     symbolState.minuteCandles.push(candle);
@@ -403,7 +484,7 @@ export class WebSocketScanner {
     }
 
     // Build 5-minute candle from the 5 1-minute candles
-    const fiveMinCandle = this.aggregate5MinCandle(required1MinCandles);
+    const fiveMinCandle = this.aggregate5MinCandle(required1MinCandles, completedPeriodTime);
 
     console.log(`   📊 5m Candle [${completedPeriodStart}:00-${completedPeriodStart + 4}:59]: O:${fiveMinCandle.open.toFixed(2)} H:${fiveMinCandle.high.toFixed(2)} L:${fiveMinCandle.low.toFixed(2)} C:${fiveMinCandle.close.toFixed(2)} V:${fiveMinCandle.volume}`);
 
@@ -417,18 +498,15 @@ export class WebSocketScanner {
   /**
    * Aggregate 5 1-minute candles into one 5-minute candle
    */
-  private aggregate5MinCandle(candles: MinuteCandle[]): BarData {
+  private aggregate5MinCandle(candles: MinuteCandle[], periodStartTime: Date): BarData {
     // Sort by timestamp to ensure correct order
     const sorted = candles.sort((a, b) => a.timestamp - b.timestamp);
 
-    // Use the close time (last candle's timestamp + 1 minute) as the candle timestamp
-    // This represents when the period actually closes
-    // For 16:30-16:34 period, timestamp will be 16:35:00
-    const closeTime = new Date(sorted[sorted.length - 1].timestamp);
-    closeTime.setMinutes(closeTime.getMinutes() + 1);
-
+    // CRITICAL: Use the period START time to match REST API behavior
+    // This ensures WebSocket and REST generate identical timestamps for the same periods
+    // For 16:30-16:34 period, timestamp will be 16:30:00 (not 16:35:00)
     return {
-      timestamp: closeTime.getTime(), // Use close time of the period
+      timestamp: periodStartTime.getTime(), // Use period start time for consistency with REST
       open: sorted[0].open,           // Open from first candle
       high: Math.max(...sorted.map(c => c.high)),  // Highest high
       low: Math.min(...sorted.map(c => c.low)),    // Lowest low
@@ -442,6 +520,27 @@ export class WebSocketScanner {
    */
   private detectPatterns(symbol: string, state: SymbolState, candle: BarData, timestamp: Date): void {
     console.log(`\n🔍 Running pattern detection for ${symbol} at ${this.formatETTime(timestamp)}...`);
+
+    // FILTER 1: Check if within configured market hours window (match REST behavior)
+    const etTime = new Date(timestamp.toLocaleString("en-US", {timeZone: "America/New_York"}));
+    const etHour = etTime.getHours() + etTime.getMinutes() / 60;
+    const [startHour, startMin] = this.config.marketHours.startTime.split(':').map(Number);
+    const [endHour, endMin] = this.config.marketHours.endTime.split(':').map(Number);
+    const configStart = startHour + startMin / 60;
+    const configEnd = endHour + endMin / 60;
+
+    if (etHour < configStart || etHour >= configEnd) {
+      console.log(`   ⏰ FILTERED OUT: ${symbol} at ${this.formatETTime(timestamp)} (ET ${etHour.toFixed(2)}) - outside ${configStart.toFixed(1)}-${configEnd.toFixed(1)} hours - SKIPPING DETECTION`);
+      return;
+    }
+
+    // FILTER 2: Check cumulative volume meets minimum requirement (match REST behavior)
+    if (state.cumulativeVolume < this.config.gapCriteria.minCumulativeVolume) {
+      console.log(`   🚫 VOLUME FILTER: ${symbol} at ${this.formatETTime(timestamp)} - cumulative volume ${(state.cumulativeVolume/1000).toFixed(1)}K < ${(this.config.gapCriteria.minCumulativeVolume/1000).toFixed(0)}K required - SKIPPING SIGNAL`);
+      return;
+    } else {
+      console.log(`   ✅ VOLUME PASSED: ${symbol} at ${this.formatETTime(timestamp)} - cumulative volume ${(state.cumulativeVolume/1000).toFixed(1)}K >= ${(this.config.gapCriteria.minCumulativeVolume/1000).toFixed(0)}K required`);
+    }
 
     // Build historical 5-minute candles from our 1-minute buffer
     // We need this for patterns like GreenRunReject that look at previous candles
@@ -465,17 +564,11 @@ export class WebSocketScanner {
       n: 1
     }));
 
+    // CRITICAL: Pass CUMULATIVE volume, not single bar volume, to match REST API
     const patterns: (Alert | null)[] = [
-      this.detectToppingTail5m.call(this, symbol, barsWithProperties as any, index, state.hod, timestamp, candle.volume, state.gapPercent),
-      this.detectGreenRunReject.call(this, symbol, barsWithProperties as any, index, state.hod, timestamp, candle.volume, state.gapPercent),
+      this.detectToppingTail5m.call(this, symbol, barsWithProperties as any, index, state.hod, timestamp, state.cumulativeVolume, state.gapPercent),
+      this.detectGreenRunReject.call(this, symbol, barsWithProperties as any, index, state.hod, timestamp, state.cumulativeVolume, state.gapPercent),
     ];
-
-    // Only check test signal if enabled
-    if (this.config.development?.enableTestSignal) {
-      patterns.push(
-        this.detectTestSignal.call(this, symbol, barsWithProperties as any, index, state.hod, timestamp, candle.volume, state.gapPercent)
-      );
-    }
 
     patterns.forEach(alert => {
       if (alert) {
@@ -530,7 +623,7 @@ export class WebSocketScanner {
 
       // Only add if we have all 5 candles for this period
       if (fiveMinCandles.length === 5) {
-        history.push(this.aggregate5MinCandle(fiveMinCandles));
+        history.push(this.aggregate5MinCandle(fiveMinCandles, periodTime));
       }
     }
 
@@ -615,7 +708,8 @@ export class WebSocketScanner {
           hod: data.currentPrice,
           gapPercent: data.gapPercent,
           previousClose: data.previousClose,
-          lastProcessed5MinBoundary: 0
+          lastProcessed5MinBoundary: 0,
+          cumulativeVolume: 0
         });
       }
 
