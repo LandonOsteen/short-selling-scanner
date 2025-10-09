@@ -180,22 +180,31 @@ export class WebSocketScanner {
 
   /**
    * Backfill recent 1-minute candles for all symbols
-   * Fetches the last 2 hours of 1-minute bars so we have history for pattern detection
+   * Fetches bars from market start time to ensure accurate HOD tracking
    */
   private async backfillRecentCandles(symbols: string[]): Promise<void> {
     const now = new Date();
-    const twoHoursAgo = new Date(now.getTime() - 120 * 60 * 1000);
 
-    // Get today's date in ET for the API call
+    // Calculate market start time based on config (e.g., 7:00 AM or 4:00 AM ET)
     const etNow = new Date(now.toLocaleString("en-US", {timeZone: "America/New_York"}));
+    const [startHour, startMin] = this.config.marketHours.startTime.split(':').map(Number);
+
+    // Create market start time in ET today
+    const marketStartET = new Date(etNow.getFullYear(), etNow.getMonth(), etNow.getDate(), startHour, startMin, 0);
+
+    // Convert ET time to UTC timestamp for filtering
+    // This handles DST automatically
+    const marketStartUTC = Date.parse(marketStartET.toLocaleString("en-US", {timeZone: "UTC"}));
+
+    // Get today's date string for API
     const dateString = `${etNow.getFullYear()}-${String(etNow.getMonth() + 1).padStart(2, '0')}-${String(etNow.getDate()).padStart(2, '0')}`;
 
-    console.log(`   Fetching 1-minute bars from ${this.formatETTime(twoHoursAgo)} to now`);
-    console.log(`   Date: ${dateString}`);
+    console.log(`   Fetching 1-minute bars from market start (${this.config.marketHours.startTime} ET) to now`);
+    console.log(`   Date: ${dateString}, Start time: ${marketStartET.toLocaleTimeString()}`);
 
     for (const symbol of symbols) {
       try {
-        // Fetch 1-minute bars for the last 10 minutes
+        // Fetch ALL 1-minute bars for today
         const url = `https://api.polygon.io/v2/aggs/ticker/${symbol}/range/1/minute/${dateString}/${dateString}?adjusted=true&sort=asc&limit=50000&apikey=${this.apiKey}`;
 
         const response = await fetch(url);
@@ -209,9 +218,9 @@ export class WebSocketScanner {
         const symbolState = this.symbols.get(symbol);
         if (!symbolState) continue;
 
-        // Filter to only last 2 hours and convert to our format
+        // Filter to only bars from market start onwards and convert to our format
         const recentBars = data.results
-          .filter((bar: any) => bar.t >= twoHoursAgo.getTime())
+          .filter((bar: any) => bar.t >= marketStartUTC)
           .map((bar: any) => ({
             timestamp: bar.t,
             open: bar.o,
@@ -224,13 +233,11 @@ export class WebSocketScanner {
         // Add to symbol's buffer
         symbolState.minuteCandles = recentBars;
 
-        // Update HOD from backfilled data
-        const maxHigh = Math.max(...recentBars.map((b: MinuteCandle) => b.high));
-        if (maxHigh > symbolState.hod) {
-          symbolState.hod = maxHigh;
-        }
+        // Update HOD from ALL backfilled data (this is the TRUE HOD since market start)
+        const maxHigh = recentBars.length > 0 ? Math.max(...recentBars.map((b: MinuteCandle) => b.high)) : symbolState.hod;
+        symbolState.hod = maxHigh;
 
-        console.log(`   ✅ ${symbol}: Loaded ${recentBars.length} 1-minute candles, HOD=${symbolState.hod.toFixed(2)}`);
+        console.log(`   ✅ ${symbol}: Loaded ${recentBars.length} 1-minute candles from ${this.config.marketHours.startTime} ET, TRUE HOD=${symbolState.hod.toFixed(2)}`);
 
         // Check if we can build a 5-minute candle immediately
         this.checkAndProcess5MinCandle(symbol, symbolState);

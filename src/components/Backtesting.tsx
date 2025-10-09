@@ -204,27 +204,67 @@ const Backtesting: React.FC<BacktestingProps> = ({ gapScanner }) => {
               let minutesToExit: number = 0;
 
               if (exitStrategy === 'marketOpen') {
-                // Exit at next day's market open
-                const nextDay = new Date(date);
-                nextDay.setDate(nextDay.getDate() + 1);
+                // Determine which day's market open to use
+                const signalTime = new Date(alert.timestamp);
 
-                // Skip weekends for next day
-                while (nextDay.getDay() === 0 || nextDay.getDay() === 6) {
-                  nextDay.setDate(nextDay.getDate() + 1);
+                // Get signal time in ET hours (convert to ET timezone)
+                const etSignalTimeStr = signalTime.toLocaleString("en-US", {timeZone: "America/New_York", hour12: false});
+                const etTimeParts = etSignalTimeStr.match(/(\d{1,2}):(\d{2}):(\d{2})/);
+
+                if (!etTimeParts) {
+                  console.warn(`Could not parse ET time for ${alert.symbol}: ${etSignalTimeStr}`);
+                  continue; // Skip this trade if we can't parse the time
                 }
 
-                const nextDayStr = nextDay.toISOString().split('T')[0];
-                const openPrice = await gapScanner.getMarketOpenPrice(alert.symbol, nextDayStr);
+                const signalHour = parseInt(etTimeParts[1]) + parseInt(etTimeParts[2]) / 60;
+
+                // If signal is before 9:30 AM (9.5 hours), exit at same day's open
+                // Otherwise, exit at next day's open
+                const [year, month, day] = date.split('-').map(Number);
+                let exitDate = new Date(year, month - 1, day); // Create date in local timezone
+
+                if (signalHour >= 9.5) {
+                  // Signal after market open - exit next day
+                  exitDate.setDate(exitDate.getDate() + 1);
+                }
+
+                // Skip weekends for exit date
+                while (exitDate.getDay() === 0 || exitDate.getDay() === 6) {
+                  exitDate.setDate(exitDate.getDate() + 1);
+                }
+
+                const exitDateStr = `${exitDate.getFullYear()}-${String(exitDate.getMonth() + 1).padStart(2, '0')}-${String(exitDate.getDate()).padStart(2, '0')}`;
+                const openPrice = await gapScanner.getMarketOpenPrice(alert.symbol, exitDateStr);
 
                 if (openPrice <= 0) {
-                  console.warn(`No open price for ${alert.symbol} on ${nextDayStr}`);
+                  console.warn(`No open price for ${alert.symbol} on ${exitDateStr}`);
                   continue;
                 }
 
                 exitPrice = openPrice;
-                exitTime = new Date(nextDayStr + 'T09:30:00');
-                const signalTime = new Date(alert.timestamp);
-                minutesToExit = Math.round((exitTime.getTime() - signalTime.getTime()) / (1000 * 60));
+
+                // Create exit time: 9:30 AM ET on exit date
+                // Note: We use 14:30 UTC which is 9:30 AM EST (winter) or 10:30 AM EDT (summer)
+                // This is primarily for display - the toLocaleTimeString in the Trade object will format it correctly to ET
+                exitTime = new Date(exitDateStr + 'T14:30:00.000Z');
+
+                // Calculate hold time: from signal to 9:30 AM ET on exit date
+                // Convert both to ET times for accurate calculation
+                const signalETStr = signalTime.toLocaleString("en-US", {timeZone: "America/New_York"});
+                const exitETStr = "09:30:00";
+
+                // Calculate days difference
+                const signalDate = new Date(signalETStr).setHours(0, 0, 0, 0);
+                const exitDateObj = new Date(exitDateStr).setHours(0, 0, 0, 0);
+                const daysDiff = Math.round((exitDateObj - signalDate) / (1000 * 60 * 60 * 24));
+
+                // Calculate time from signal to 9:30 AM
+                const signalETHours = parseInt(etTimeParts[1]);
+                const signalETMinutes = parseInt(etTimeParts[2]);
+                const signalMinutesFromMidnight = signalETHours * 60 + signalETMinutes;
+                const exitMinutesFromMidnight = 9 * 60 + 30; // 9:30 AM
+
+                minutesToExit = (daysDiff * 24 * 60) + (exitMinutesFromMidnight - signalMinutesFromMidnight);
 
               } else {
                 // Intraday exit strategies - get 5-minute bars

@@ -20,7 +20,6 @@ interface HistoricalResults {
 const PATTERN_CONFIGS: Partial<Record<PatternType, { title: string; color: string; priority: number }>> = {
   'ToppingTail5m': { title: '5-Minute Topping Tail', color: '#dc3545', priority: 1 },
   'GreenRunReject': { title: 'Green Run Rejection', color: '#28a745', priority: 1 },
-  'TestSignal': { title: 'Test Signal', color: '#ffc107', priority: 2 },
 };
 
 const HistoricalTesting: React.FC<HistoricalTestingProps> = ({ gapScanner }) => {
@@ -100,14 +99,13 @@ const HistoricalTesting: React.FC<HistoricalTestingProps> = ({ gapScanner }) => 
       const patternBreakdown: Partial<Record<PatternType, number>> = {
         'ToppingTail5m': 0,
         'GreenRunReject': 0,
-        'TestSignal': 0,
       };
 
       const uniqueSymbols = new Set<string>();
 
       // Filter to only include 5-minute patterns we care about
       const filteredHistoricalAlerts = historicalAlerts.filter(
-        alert => alert.type === 'ToppingTail5m' || alert.type === 'GreenRunReject' || alert.type === 'TestSignal'
+        alert => alert.type === 'ToppingTail5m' || alert.type === 'GreenRunReject'
       );
 
       filteredHistoricalAlerts.forEach(alert => {

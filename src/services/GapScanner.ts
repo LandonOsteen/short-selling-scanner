@@ -960,8 +960,15 @@ export class GapScanner {
     try {
       const now = this.getCurrentTime();
 
-      // Only scan during configured market hours
-      if (this.isWithinMarketHours(now)) {
+      // Check if we're within market hours, before, or after
+      const startTime = this.getMarketStartTime();
+      const endTime = this.getMarketEndTime();
+      const isWithin = this.isWithinMarketHours(now);
+      const isBeforeStart = now.getTime() < startTime.getTime();
+      const isAfterEnd = now.getTime() >= endTime.getTime();
+
+      if (isWithin) {
+        // WITHIN MARKET HOURS - Perform backfill
         console.log(`✅ Within market hours - proceeding with backfill at ${this.formatETTime(now)}...`);
         if (this.config.development.enableDebugLogging) {
           console.log(`   Checking for new pattern signals since last scan`);
@@ -995,9 +1002,24 @@ export class GapScanner {
         }, msUntilNext);
         console.log(`   ✅ Next scan scheduled (timeout ID: ${this.scanInterval})`);
 
-      } else {
-        // AUTO-STOP: When outside market hours, stop the scanner automatically
-        console.log(`❌ OUTSIDE MARKET HOURS at ${this.formatETTime(now)}`);
+      } else if (isBeforeStart) {
+        // BEFORE MARKET HOURS - Wait for market to open
+        console.log(`⏰ BEFORE MARKET HOURS at ${this.formatETTime(now)} (market starts at ${this.formatETTime(startTime)})`);
+        console.log(`   Waiting for market to open... will check again in 30 seconds`);
+
+        // Schedule check in 30 seconds
+        if (this.scanInterval) {
+          clearTimeout(this.scanInterval);
+        }
+        this.scanInterval = window.setTimeout(() => {
+          console.log(`\n⏰ PRE-MARKET CHECK - Checking if market hours have started`);
+          this.performScheduledBackfill();
+        }, 30000); // Check every 30 seconds
+        console.log(`   ✅ Pre-market check scheduled (timeout ID: ${this.scanInterval})`);
+
+      } else if (isAfterEnd) {
+        // AFTER MARKET HOURS - Auto-stop scanner
+        console.log(`❌ AFTER MARKET HOURS at ${this.formatETTime(now)} (market ended at ${this.formatETTime(endTime)})`);
         if (this.isScanning) {
           console.log(`🛑 Automatically stopping scanner...`);
           this.stopScanning();
@@ -1009,9 +1031,15 @@ export class GapScanner {
       console.error('❌ ERROR in scheduled backfill:', error);
       console.error('   Stack trace:', error);
 
-      // Even on error, schedule next scan
-      if (this.isScanning && this.isWithinMarketHours(this.getCurrentTime())) {
-        const msUntilNext = this.getMillisecondsUntilNext5MinBoundary();
+      // Even on error, schedule next scan if still scanning and not after market hours
+      const currentTime = this.getCurrentTime();
+      const isAfterMarket = currentTime.getTime() >= this.getMarketEndTime().getTime();
+
+      if (this.isScanning && !isAfterMarket) {
+        const msUntilNext = this.isWithinMarketHours(currentTime)
+          ? this.getMillisecondsUntilNext5MinBoundary()
+          : 30000; // 30 seconds if before market
+
         console.log(`⚠️  RECOVERY: Scheduling next scan despite error (in ${(msUntilNext/1000).toFixed(0)}s)`);
         if (this.scanInterval) {
           clearTimeout(this.scanInterval);
@@ -1022,7 +1050,7 @@ export class GapScanner {
         }, msUntilNext);
         console.log(`   ✅ Recovery scan scheduled (timeout ID: ${this.scanInterval})`);
       } else {
-        console.log(`❌ NOT RESCHEDULING: isScanning=${this.isScanning}, withinMarketHours=${this.isWithinMarketHours(this.getCurrentTime())}`);
+        console.log(`❌ NOT RESCHEDULING: isScanning=${this.isScanning}, isAfterMarket=${isAfterMarket}`);
       }
     }
 
@@ -1215,7 +1243,25 @@ export class GapScanner {
 
       // Get gap stocks that qualified on this date with proper filtering
       console.log(`Step 1: Finding gap stocks for ${dateString} with criteria: 20%+ gap, 500k+ volume, $1-$10 price`);
-      const historicalGapStocks = await this.getHistoricalGapStocks(dateString);
+
+      // OPTIMIZATION: If scanning TODAY during market hours, use current gap stocks instead of re-fetching
+      const now = this.getCurrentTime();
+      const etNowForDate = new Date(now.toLocaleString("en-US", {timeZone: "America/New_York"}));
+      const todayDateString = `${etNowForDate.getFullYear()}-${String(etNowForDate.getMonth() + 1).padStart(2, '0')}-${String(etNowForDate.getDate()).padStart(2, '0')}`;
+      const isToday = dateString === todayDateString;
+      const isWithinHours = this.isWithinMarketHours(now);
+
+      let historicalGapStocks: GapStock[];
+
+      if (isToday && isWithinHours && this.gapStocks.size > 0) {
+        // Use current gap stocks list (already populated by scanForGappers)
+        historicalGapStocks = Array.from(this.gapStocks.values());
+        console.log(`✅ Using CURRENT gap stocks list (${historicalGapStocks.length} stocks) - scanning TODAY during market hours`);
+      } else {
+        // Fetch historical gap stocks for past dates or when market is closed
+        historicalGapStocks = await this.getHistoricalGapStocks(dateString);
+        console.log(`📊 Fetched HISTORICAL gap stocks (${historicalGapStocks.length} stocks) - scanning ${isToday ? 'TODAY after hours' : 'past date'}`);
+      }
 
       if (historicalGapStocks.length === 0) {
         console.log('No qualifying gap stocks found for this date');
