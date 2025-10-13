@@ -137,7 +137,8 @@ const HODBreakFeed: React.FC<HODBreakFeedProps> = ({
         // Play voice alert if enabled
         if (voiceAlertsEnabled && 'speechSynthesis' in window) {
           const patternName = getPatternDisplayName(newAlert.type);
-          const utterance = new SpeechSynthesisUtterance(`${patternName} signal for ${newAlert.symbol} at ${newAlert.price.toFixed(2)}`);
+          const hodText = newAlert.hod ? ` High of day ${newAlert.hod.toFixed(2)}` : '';
+          const utterance = new SpeechSynthesisUtterance(`${patternName} signal for ${newAlert.symbol} at ${newAlert.price.toFixed(2)}${hodText}`);
           utterance.rate = 1.2;
           utterance.pitch = 1.0;
           utterance.volume = 0.8;
@@ -440,6 +441,12 @@ const HODBreakFeed: React.FC<HODBreakFeedProps> = ({
                       <span className="metric-label">Volume:</span>
                       <span className="metric-value">{(alert.volume / 1000).toFixed(0)}K</span>
                     </div>
+                    {alert.hod !== undefined && (
+                      <div className="metric">
+                        <span className="metric-label">HOD:</span>
+                        <span className="metric-value">${alert.hod.toFixed(2)}</span>
+                      </div>
+                    )}
                     <div className="metric">
                       <span className="metric-label">Time:</span>
                       <span className="metric-value">{formatTime(alert.timestamp)}</span>

@@ -83,7 +83,7 @@ export class WebSocketScanner {
   /**
    * Connect to Polygon WebSocket and subscribe to symbols
    */
-  async connect(symbolsData: Array<{ symbol: string; gapPercent: number; previousClose: number; currentPrice: number }>): Promise<void> {
+  async connect(symbolsData: Array<{ symbol: string; gapPercent: number; previousClose: number; currentPrice: number; hod?: number }>): Promise<void> {
     console.log('\n' + '='.repeat(80));
     console.log('🔌 WEBSOCKET: Connecting to Polygon...');
     console.log('='.repeat(80));
@@ -156,20 +156,23 @@ export class WebSocketScanner {
   /**
    * Initialize symbol states and backfill recent 1-minute candles
    */
-  private async initializeSymbols(symbolsData: Array<{ symbol: string; gapPercent: number; previousClose: number; currentPrice: number }>): Promise<void> {
+  private async initializeSymbols(symbolsData: Array<{ symbol: string; gapPercent: number; previousClose: number; currentPrice: number; hod?: number }>): Promise<void> {
     console.log(`\n📊 Initializing ${symbolsData.length} symbols...`);
 
     for (const data of symbolsData) {
+      // Use passed HOD if available (from gap scan), otherwise use current price as initial estimate
+      const initialHOD = data.hod !== undefined ? data.hod : data.currentPrice;
+
       this.symbols.set(data.symbol, {
         symbol: data.symbol,
         minuteCandles: [],
-        hod: data.currentPrice, // Initialize with current price
+        hod: initialHOD,
         gapPercent: data.gapPercent,
         previousClose: data.previousClose,
         lastProcessed5MinBoundary: 0,
         cumulativeVolume: 0 // Will be calculated during backfill
       });
-      console.log(`   ✅ ${data.symbol}: gap=${data.gapPercent.toFixed(1)}%, HOD=${data.currentPrice.toFixed(2)}`);
+      console.log(`   ✅ ${data.symbol}: gap=${data.gapPercent.toFixed(1)}%, Initial HOD=${initialHOD.toFixed(2)}${data.hod !== undefined ? ' (from gap scan)' : ' (from current price)'}`);
     }
 
     // Backfill recent 1-minute candles for each symbol
@@ -225,7 +228,18 @@ export class WebSocketScanner {
         const symbolState = this.symbols.get(symbol);
         if (!symbolState) continue;
 
-        // Filter to only bars from market start onwards and convert to our format
+        // STEP 3: Calculate TRUE HOD from ALL bars (including early pre-market)
+        // HOD should ALWAYS include full pre-market regardless of configured start time
+        // For example: config might start at 7AM but pre-market high at 5AM should count
+        const allBarsForHOD = data.results.map((bar: any) => ({
+          timestamp: bar.t,
+          high: bar.h
+        }));
+        const todayMaxHigh = allBarsForHOD.length > 0 ? Math.max(...allBarsForHOD.map((b: any) => b.high)) : 0;
+        symbolState.hod = Math.max(afterHoursHigh, todayMaxHigh);
+
+        // STEP 4: Filter to only bars from CONFIGURED market start onwards for buffer and volume
+        // Volume calculation should ONLY include bars from configured start time
         const recentBars = data.results
           .filter((bar: any) => bar.t >= marketStartUTC)
           .map((bar: any) => ({
@@ -237,21 +251,16 @@ export class WebSocketScanner {
             volume: bar.v
           }));
 
-        // Add to symbol's buffer
+        // Add to symbol's buffer (only bars from configured start time)
         symbolState.minuteCandles = recentBars;
 
-        // STEP 3: Calculate TRUE HOD including previous day after-hours
-        // This is CRITICAL to match REST behavior
-        const todayMaxHigh = recentBars.length > 0 ? Math.max(...recentBars.map((b: MinuteCandle) => b.high)) : 0;
-        symbolState.hod = Math.max(afterHoursHigh, todayMaxHigh);
-
-        // Calculate cumulative volume from all backfilled bars
+        // Calculate cumulative volume ONLY from bars within configured hours
         // CRITICAL: This must match REST API behavior
         symbolState.cumulativeVolume = recentBars.reduce((sum: number, bar: MinuteCandle) => sum + bar.volume, 0);
 
         console.log(`   ✅ ${symbol}: Loaded ${recentBars.length} 1-minute candles from ${this.config.marketHours.startTime} ET`);
-        console.log(`      📈 HOD Calculation: Prev day after-hours=$${afterHoursHigh.toFixed(2)}, Today max=$${todayMaxHigh.toFixed(2)}, TRUE HOD=$${symbolState.hod.toFixed(2)}`);
-        console.log(`      📊 Cumulative Volume: ${(symbolState.cumulativeVolume/1000).toFixed(1)}K`);
+        console.log(`      📈 HOD Calculation: Prev day after-hours=$${afterHoursHigh.toFixed(2)}, Today max=$${todayMaxHigh.toFixed(2)} (from ALL ${allBarsForHOD.length} bars), TRUE HOD=$${symbolState.hod.toFixed(2)}`);
+        console.log(`      📊 Cumulative Volume: ${(symbolState.cumulativeVolume/1000).toFixed(1)}K (from bars >= ${this.config.marketHours.startTime})`);
 
         // Check if we can build a 5-minute candle immediately
         this.checkAndProcess5MinCandle(symbol, symbolState);
@@ -491,8 +500,11 @@ export class WebSocketScanner {
     // Mark this boundary as processed
     state.lastProcessed5MinBoundary = completedPeriodTimestamp;
 
-    // Run pattern detection on the 5-minute candle
-    this.detectPatterns(symbol, state, fiveMinCandle, completedPeriodTime);
+    // Run pattern detection on the 5-minute candle (async - don't await to avoid blocking)
+    this.detectPatterns(symbol, state, fiveMinCandle, completedPeriodTime)
+      .catch(error => {
+        console.error(`❌ Error in pattern detection for ${symbol}:`, error);
+      });
   }
 
   /**
@@ -518,7 +530,7 @@ export class WebSocketScanner {
   /**
    * Run pattern detection on completed 5-minute candle
    */
-  private detectPatterns(symbol: string, state: SymbolState, candle: BarData, timestamp: Date): void {
+  private async detectPatterns(symbol: string, state: SymbolState, candle: BarData, timestamp: Date): Promise<void> {
     console.log(`\n🔍 Running pattern detection for ${symbol} at ${this.formatETTime(timestamp)}...`);
 
     // FILTER 1: Check if within configured market hours window (match REST behavior)
@@ -542,15 +554,15 @@ export class WebSocketScanner {
       console.log(`   ✅ VOLUME PASSED: ${symbol} at ${this.formatETTime(timestamp)} - cumulative volume ${(state.cumulativeVolume/1000).toFixed(1)}K >= ${(this.config.gapCriteria.minCumulativeVolume/1000).toFixed(0)}K required`);
     }
 
-    // Build historical 5-minute candles from our 1-minute buffer
-    // We need this for patterns like GreenRunReject that look at previous candles
-    const bars5m = this.build5MinCandleHistory(state, timestamp);
+    // CRITICAL FIX: Fetch native 5-minute bars from REST API for reliable history
+    // This ensures we have complete historical context even if 1-minute bars have gaps
+    const bars5m = await this.build5MinCandleHistory(symbol, timestamp);
 
     // Add the current candle to the end
     bars5m.push(candle);
     const index = bars5m.length - 1; // Current candle is the last one
 
-    console.log(`   📊 Built history of ${bars5m.length} 5-minute candles for pattern detection`);
+    console.log(`   📊 Built history of ${bars5m.length} 5-minute candles (${bars5m.length - 1} from REST + 1 current) for pattern detection`);
 
     // Convert BarData to match expected format
     const barsWithProperties = bars5m.map(bar => ({
@@ -583,19 +595,83 @@ export class WebSocketScanner {
   }
 
   /**
-   * Build historical 5-minute candles from 1-minute buffer
+   * Build historical 5-minute candles using HYBRID approach
+   * CRITICAL: REST API has lag (10-30s), so we use:
+   * 1. REST API for older bars (reliable, complete)
+   * 2. Our 1-minute buffer for recent bars (real-time, no lag)
    * Returns up to last 20 5-minute candles (for patterns that need history)
    */
-  private build5MinCandleHistory(state: SymbolState, currentTimestamp: Date): BarData[] {
-    const history: BarData[] = [];
+  private async build5MinCandleHistory(symbol: string, currentTimestamp: Date): Promise<BarData[]> {
+    try {
+      const state = this.symbols.get(symbol);
+      if (!state) {
+        console.log(`   ⚠️  ${symbol}: Symbol state not found`);
+        return [];
+      }
 
-    // Get the current 5-minute period
+      // STEP 1: Fetch older bars from REST API (reliable, but has lag)
+      const now = new Date();
+      const dateString = now.toISOString().split('T')[0];
+
+      const url = `https://api.polygon.io/v2/aggs/ticker/${symbol}/range/5/minute/${dateString}/${dateString}?adjusted=true&sort=asc&limit=50000&include_extended_hours=true&apikey=${this.apiKey}`;
+
+      const response = await fetch(url);
+      const data = await response.json();
+
+      let olderBars: BarData[] = [];
+
+      if (data.results && data.results.length > 0) {
+        // Get bars from REST API, but exclude the most recent 3 periods (15 minutes)
+        // These might not be published yet due to API lag
+        const cutoffTime = currentTimestamp.getTime() - (15 * 60 * 1000); // 15 minutes ago
+
+        olderBars = data.results
+          .filter((bar: any) => bar.t < cutoffTime)
+          .map((bar: any) => ({
+            timestamp: bar.t,
+            open: bar.o,
+            high: bar.h,
+            low: bar.l,
+            close: bar.c,
+            volume: bar.v
+          }));
+
+        console.log(`   📊 Fetched ${olderBars.length} older 5-minute bars from REST API (before ${new Date(cutoffTime).toLocaleTimeString()})`);
+      }
+
+      // STEP 2: Build recent bars from our 1-minute buffer (real-time, no lag)
+      const recentBars = this.buildRecent5MinBarsFromBuffer(state, currentTimestamp);
+      console.log(`   📊 Built ${recentBars.length} recent 5-minute bars from 1-minute buffer`);
+
+      // STEP 3: Combine and return last 20 bars
+      const allBars = [...olderBars, ...recentBars];
+      const history = allBars.slice(-20);
+
+      console.log(`   📊 Total history: ${history.length} bars (${olderBars.length} from REST + ${recentBars.length} from buffer)`);
+
+      return history;
+
+    } catch (error) {
+      console.error(`   ❌ Failed to build 5-minute history for ${symbol}:`, error);
+      return [];
+    }
+  }
+
+  /**
+   * Build recent 5-minute bars from 1-minute buffer
+   * This avoids REST API lag for the most recent periods
+   */
+  private buildRecent5MinBarsFromBuffer(state: SymbolState, currentTimestamp: Date): BarData[] {
+    const recentBars: BarData[] = [];
+
+    // Get ET time for the current timestamp
     const etTime = new Date(currentTimestamp.toLocaleString("en-US", {timeZone: "America/New_York"}));
     const currentMinute = etTime.getMinutes();
     const currentPeriodStart = Math.floor(currentMinute / 5) * 5;
 
-    // Build up to 20 previous 5-minute candles (100 minutes of history)
-    for (let periodsBack = 20; periodsBack > 0; periodsBack--) {
+    // Build up to 4 recent 5-minute candles (20 minutes of recent history)
+    // Go backwards from the period before the current one
+    for (let periodsBack = 4; periodsBack > 0; periodsBack--) {
       const periodStart = currentPeriodStart - (periodsBack * 5);
       const periodTime = new Date(etTime);
       periodTime.setMinutes(periodStart, 0, 0);
@@ -623,11 +699,11 @@ export class WebSocketScanner {
 
       // Only add if we have all 5 candles for this period
       if (fiveMinCandles.length === 5) {
-        history.push(this.aggregate5MinCandle(fiveMinCandles, periodTime));
+        recentBars.push(this.aggregate5MinCandle(fiveMinCandles, periodTime));
       }
     }
 
-    return history;
+    return recentBars;
   }
 
   /**
@@ -681,7 +757,7 @@ export class WebSocketScanner {
   /**
    * Update watched symbols
    */
-  async updateSymbols(symbolsData: Array<{ symbol: string; gapPercent: number; previousClose: number; currentPrice: number }>): Promise<void> {
+  async updateSymbols(symbolsData: Array<{ symbol: string; gapPercent: number; previousClose: number; currentPrice: number; hod?: number }>): Promise<void> {
     console.log(`\n📊 Updating symbols (${symbolsData.length} symbols)...`);
 
     const newSymbols = new Set(symbolsData.map(s => s.symbol));
@@ -702,10 +778,11 @@ export class WebSocketScanner {
     // Add new symbols
     if (toAdd.length > 0) {
       for (const data of toAdd) {
+        const initialHOD = data.hod !== undefined ? data.hod : data.currentPrice;
         this.symbols.set(data.symbol, {
           symbol: data.symbol,
           minuteCandles: [],
-          hod: data.currentPrice,
+          hod: initialHOD,
           gapPercent: data.gapPercent,
           previousClose: data.previousClose,
           lastProcessed5MinBoundary: 0,

@@ -420,6 +420,10 @@ export class GapScanner {
         if (priceInRange && volumeQualified && gapQualified) {
           console.log(`✅ ${tickerSymbol}: QUALIFIED - ${changePerc.toFixed(1)}% gap, ${(avgVolume/1000).toFixed(0)}K volume, $${lastPrice.toFixed(2)}`);
 
+          // CRITICAL: Calculate TRUE HOD including previous day after-hours and current day extended hours
+          // ticker.day.h ONLY includes RTH and is INCORRECT for pattern detection
+          const trueHOD = await this.calculateTrueHOD(tickerSymbol, today);
+
           // Create gap stock from live data
           const gapStock: GapStock = {
             symbol: tickerSymbol,
@@ -428,7 +432,7 @@ export class GapScanner {
             previousClose: previousClose,
             volume: avgVolume,
             cumulativeVolume: avgVolume, // Use min.av as cumulative volume
-            hod: ticker.day?.h || lastPrice, // Use day high or current price
+            hod: trueHOD, // Use TRUE HOD including extended hours
             lastUpdated: Date.now(),
             ema200: undefined
           };
@@ -497,6 +501,7 @@ export class GapScanner {
   }
 
   // Calculate both premarket volume and HOD from extended-hours minute bars
+  // CRITICAL: HOD includes previous day after-hours (4-8 PM) to match pattern detection logic
   private async getPremarketVolumeAndHOD(symbol: string, date: string): Promise<{ volume: number; hod: number } | null> {
     try {
       // Get current time to determine end of premarket volume calculation
@@ -510,17 +515,27 @@ export class GapScanner {
 
       console.log(`Calculating premarket volume and HOD for ${symbol} from ${this.formatETTime(marketStart)} to ${this.formatETTime(endTime)}`);
 
-      // Get minute bars for the premarket period (with extended hours)
+      // STEP 1: Get previous day after-hours high (4-8 PM) - CRITICAL for accurate HOD
+      const previousDate = this.getPreviousTradingDay(date);
+      const afterHoursBars = await this.getAfterHoursBars(symbol, previousDate);
+      const afterHoursHigh = afterHoursBars.length > 0 ? Math.max(...afterHoursBars.map(bar => bar.h)) : 0;
+      console.log(`   📊 ${symbol} Previous day (${previousDate}) after-hours high: $${afterHoursHigh.toFixed(2)}`);
+
+      // STEP 2: Get minute bars for the premarket period (with extended hours)
       const bars = await this.getHistoricalBars(symbol, marketStart, endTime);
 
       if (bars.length === 0) {
         console.warn(`No premarket bars found for ${symbol}`);
+        // If no premarket bars but we have after-hours high, return that
+        if (afterHoursHigh > 0) {
+          return { volume: 0, hod: afterHoursHigh };
+        }
         return null;
       }
 
-      // Calculate volume and HOD from extended-hours bars
+      // STEP 3: Calculate volume and HOD from extended-hours bars
       let totalPremarketVolume = 0;
-      let premarketHOD = 0;
+      let premarketHOD = afterHoursHigh; // START with previous day after-hours high
 
       bars.forEach(bar => {
         const barTime = new Date(bar.t);
@@ -534,7 +549,7 @@ export class GapScanner {
         }
       });
 
-      console.log(`${symbol}: Calculated premarket volume = ${(totalPremarketVolume/1000).toFixed(0)}K, HOD = $${premarketHOD.toFixed(2)} from ${bars.length} minute bars`);
+      console.log(`${symbol}: Calculated premarket volume = ${(totalPremarketVolume/1000).toFixed(0)}K, HOD = $${premarketHOD.toFixed(2)} (includes prev day after-hours) from ${bars.length} minute bars`);
 
       return { volume: totalPremarketVolume, hod: premarketHOD };
 
@@ -868,7 +883,8 @@ export class GapScanner {
           symbol: stock.symbol,
           gapPercent: stock.gapPercent,
           previousClose: stock.previousClose,
-          currentPrice: stock.currentPrice
+          currentPrice: stock.currentPrice,
+          hod: stock.hod // Pass the true HOD from gap scan
         }));
 
         await this.webSocketScanner!.connect(symbolsData);
@@ -882,7 +898,8 @@ export class GapScanner {
             symbol: stock.symbol,
             gapPercent: stock.gapPercent,
             previousClose: stock.previousClose,
-            currentPrice: stock.currentPrice
+            currentPrice: stock.currentPrice,
+            hod: stock.hod
           }));
           await this.webSocketScanner!.updateSymbols(updatedData);
         }, 120000); // 2 minutes
@@ -1644,7 +1661,13 @@ export class GapScanner {
       // Start with the pre-market HOD (includes previous day post-market + current day pre-market)
       let currentHOD = premarketHOD;
 
-      console.log(`📈 ${symbol} Starting HOD: $${currentHOD.toFixed(2)} (prev day post-market: $${afterHoursHOD.toFixed(2)}, pre-market high: $${premarketHOD.toFixed(2)})`);
+      console.log(`\n${'='.repeat(60)}`);
+      console.log(`📈 ${symbol} HOD TRACKING INITIALIZATION`);
+      console.log(`${'='.repeat(60)}`);
+      console.log(`   Previous day after-hours high: $${afterHoursHOD.toFixed(2)}`);
+      console.log(`   Pre-market high (before ${configStart} hours): $${premarketHOD.toFixed(2)}`);
+      console.log(`   STARTING HOD: $${currentHOD.toFixed(2)}`);
+      console.log(`${'='.repeat(60)}\n`);
 
       // Progressive HOD tracking: Track HOD progressively as bars are processed chronologically.
       // This ensures we detect EVERY legitimate HOD break that occurred during the session,
@@ -1652,6 +1675,7 @@ export class GapScanner {
       // that moment in time, providing accurate signal detection and backtesting results.
 
       // Build a cumulative volume map from 1-minute bars for accurate volume tracking
+      // DO NOT update currentHOD here - we need to track it progressively as we scan 5-minute bars
       const volumeMap = new Map<number, number>(); // timestamp -> cumulative volume
       let cumulativeVolume = 0;
 
@@ -1661,12 +1685,9 @@ export class GapScanner {
           cumulativeVolume += bar1m.v;
           volumeMap.set(bar1m.t, cumulativeVolume);
 
-          // Update HOD from 1-minute bars as well to catch intrabar highs
-          if (bar1m.h > currentHOD) {
-            const previousHOD = currentHOD;
-            currentHOD = bar1m.h;
-            console.log(`📈 NEW HOD (1m): ${symbol} ${previousHOD.toFixed(2)} → ${currentHOD.toFixed(2)} at ${this.formatETTime(new Date(bar1m.t))}`);
-          }
+          // NOTE: We do NOT update currentHOD here anymore
+          // HOD will be updated progressively as we process 5-minute bars
+          // This ensures each bar is evaluated against the HOD at that moment in time
         }
       }
 
@@ -1696,12 +1717,16 @@ export class GapScanner {
           }
         }
 
-        // Update HOD progressively from 5-minute bars (should match 1m HOD but check anyway)
+        // Update HOD progressively from 5-minute bars BEFORE pattern detection
+        // This ensures the HOD reflects all highs up to AND INCLUDING this bar
+        const hodBeforeThisBar = currentHOD;
         if (bar.h > currentHOD) {
           const previousHOD = currentHOD;
           currentHOD = bar.h;
           console.log(`📈 NEW HOD (5m): ${symbol} ${previousHOD.toFixed(2)} → ${currentHOD.toFixed(2)} at ${this.formatETTime(timestamp)}`);
         }
+
+        console.log(`   📊 ${symbol} Bar #${index} at ${this.formatETTime(timestamp)}: High=${bar.h.toFixed(2)}, HOD before bar=${hodBeforeThisBar.toFixed(2)}, HOD after bar=${currentHOD.toFixed(2)}`);
 
         // Enhanced debug logging for bars within time range
         if (etHour >= 9.3) {
@@ -1724,6 +1749,9 @@ export class GapScanner {
         // Check 5-minute patterns using native 5-minute bars
         // Use bar.t directly for timestamp to ensure consistency with filtering
         const barTimestamp = new Date(bar.t);
+
+        console.log(`   🔍 Checking patterns for bar #${index} using HOD=$${currentHOD.toFixed(2)}`);
+
         const patterns = [
           this.detectToppingTail5m(symbol, bars5m, index, currentHOD, barTimestamp, cumulativeVolumeUpToNow, gapPercent),
           this.detectGreenRunReject(symbol, bars5m, index, currentHOD, barTimestamp, cumulativeVolumeUpToNow, gapPercent),
@@ -1734,9 +1762,12 @@ export class GapScanner {
           if (alert) {
             const alertTime = new Date(alert.timestamp);
             const alertETHour = this.getETHour(alertTime);
+            console.log(`\n${'🔔'.repeat(30)}`);
             console.log(`📍 HISTORICAL ALERT GENERATED: ${symbol} ${alert.type} at ${this.formatETTime(alertTime)} (ET ${alertETHour.toFixed(2)})`);
             console.log(`   📊 Volume Details: Signal volume=${(cumulativeVolumeUpToNow/1000).toFixed(1)}k (up to signal time), Total session=${(totalSessionVolume/1000).toFixed(1)}k, Required=${(this.config.gapCriteria.minCumulativeVolume/1000).toFixed(0)}k`);
-            console.log(`   🎯 Volume Source: Cumulative from 6:30 AM to ${this.formatETTime(alertTime)} = ${cumulativeVolumeUpToNow.toLocaleString()} shares`);
+            console.log(`   🎯 Volume Source: Cumulative from ${this.config.marketHours.startTime} to ${this.formatETTime(alertTime)} = ${cumulativeVolumeUpToNow.toLocaleString()} shares`);
+            console.log(`   📈 HOD in alert: $${alert.hod?.toFixed(2) || 'N/A'} | Bar high: $${bar.h.toFixed(2)} | Current HOD: $${currentHOD.toFixed(2)}`);
+            console.log(`${'🔔'.repeat(30)}\n`);
             alerts.push(alert);
           }
         });
@@ -1925,6 +1956,58 @@ export class GapScanner {
     }
   }
 
+  /**
+   * Calculate TRUE HOD including:
+   * 1. Previous day after-hours (4-8 PM)
+   * 2. Current day all bars (pre-market + RTH + after-hours)
+   *
+   * This is CRITICAL because Polygon's daily data (ticker.day.h) ONLY includes RTH
+   * and excludes extended hours data, giving an incorrect HOD.
+   */
+  private async calculateTrueHOD(symbol: string, date: string): Promise<number> {
+    try {
+      console.log(`\n${'='.repeat(60)}`);
+      console.log(`📈 CALCULATING TRUE HOD FOR ${symbol}`);
+      console.log(`${'='.repeat(60)}`);
+
+      // STEP 1: Get previous day after-hours high (4-8 PM)
+      const previousDate = this.getPreviousTradingDay(date);
+      const afterHoursBars = await this.getAfterHoursBars(symbol, previousDate);
+      const afterHoursHigh = afterHoursBars.length > 0 ? Math.max(...afterHoursBars.map(bar => bar.h)) : 0;
+      console.log(`   📊 Previous day (${previousDate}) after-hours high: $${afterHoursHigh.toFixed(2)} (from ${afterHoursBars.length} bars)`);
+
+      // STEP 2: Get current day ALL bars (including extended hours)
+      const url = `https://api.polygon.io/v2/aggs/ticker/${symbol}/range/1/minute/${date}/${date}?adjusted=true&sort=asc&limit=${this.config.api.aggregatesLimit}&include_extended_hours=true&apikey=${this.polygonApiKey}`;
+
+      const response = await fetch(url);
+      if (!response.ok) {
+        console.warn(`   ⚠️  Failed to fetch current day bars for ${symbol}`);
+        return afterHoursHigh; // Fall back to after-hours high if current day data not available
+      }
+
+      const data: PolygonAggregatesResponse = await response.json();
+      if (data.status !== 'OK' || !data.results || data.results.length === 0) {
+        console.warn(`   ⚠️  No current day bars available for ${symbol}`);
+        return afterHoursHigh;
+      }
+
+      // Calculate current day high from ALL bars (pre-market + RTH + after-hours)
+      const currentDayHigh = Math.max(...data.results.map(bar => bar.h));
+      console.log(`   📊 Current day (${date}) high: $${currentDayHigh.toFixed(2)} (from ${data.results.length} bars, includes extended hours)`);
+
+      // STEP 3: Return the maximum of both
+      const trueHOD = Math.max(afterHoursHigh, currentDayHigh);
+      console.log(`   ✅ TRUE HOD: $${trueHOD.toFixed(2)} (max of after-hours and current day)`);
+      console.log(`${'='.repeat(60)}\n`);
+
+      return trueHOD;
+
+    } catch (error) {
+      console.error(`   ❌ Error calculating true HOD for ${symbol}:`, error);
+      return 0;
+    }
+  }
+
   private generateProperCandleTimes(start: Date, end: Date): number[] {
     const times: number[] = [];
     const startTime = start.getTime();
@@ -2086,14 +2169,17 @@ export class GapScanner {
     const maxHighDistance = this.config.patterns.toppingTail5m.maxHighDistanceFromHODPercent;
 
     if (requireStrictBreak) {
-      // STRICT: Candle HIGH must touch or break HOD
+      // STRICT MODE: Candle HIGH must touch or break HOD
+      // maxHighDistanceFromHODPercent is NOT used in strict mode
+      // maxCloseDistanceFromHODPercent is NOT used in strict mode
       if (bar.h < hod) {
         console.log(`⏭️  ${symbol} - High ${bar.h.toFixed(2)} does not break HOD ${hod.toFixed(2)} (${((bar.h - hod) / hod * 100).toFixed(2)}% below) [STRICT MODE]`);
         return null;
       }
-      console.log(`✅ ${symbol} - High proximity check passed: ${bar.h.toFixed(2)} breaks/touches HOD ${hod.toFixed(2)} [STRICT MODE]`);
+      console.log(`✅ ${symbol} - High proximity check passed: ${bar.h.toFixed(2)} breaks/touches HOD ${hod.toFixed(2)} [STRICT MODE - distance filters disabled]`);
     } else {
-      // LOOSE: Candle HIGH can be within X% of HOD
+      // LOOSE MODE: Candle HIGH can be within X% of HOD
+      // Both maxHighDistanceFromHODPercent and maxCloseDistanceFromHODPercent are used
       const highDistanceFromHOD = ((hod - bar.h) / hod) * 100; // Positive = below HOD, Negative = above HOD
 
       if (Math.abs(highDistanceFromHOD) > maxHighDistance) {
@@ -2103,18 +2189,23 @@ export class GapScanner {
       console.log(`✅ ${symbol} - High proximity check passed: ${bar.h.toFixed(2)} is ${Math.abs(highDistanceFromHOD).toFixed(2)}% from HOD ${hod.toFixed(2)} (max: ${maxHighDistance}%) [LOOSE MODE]`);
     }
 
-    // CHECK 2: Candle CLOSE must be within Y% below HOD (prevents low closes)
-    // This catches cases where candle spikes to HOD but closes way below
-    const closeDistanceFromHOD = ((hod - bar.c) / hod) * 100; // Positive = below HOD
-    const maxCloseDistance = this.config.patterns.toppingTail5m.maxCloseDistanceFromHODPercent;
+    // CHECK 2: Candle CLOSE must be within Y% below HOD (ONLY in LOOSE mode)
+    // This catches cases where candle spikes near HOD but closes way below
+    // In STRICT mode, this check is DISABLED - we only care that the high broke HOD
+    if (!requireStrictBreak) {
+      const closeDistanceFromHOD = ((hod - bar.c) / hod) * 100; // Positive = below HOD
+      const maxCloseDistance = this.config.patterns.toppingTail5m.maxCloseDistanceFromHODPercent;
 
-    // Only check if close is BELOW HOD (positive distance)
-    if (closeDistanceFromHOD > maxCloseDistance) {
-      console.log(`⏭️  ${symbol} - Close ${bar.c.toFixed(2)} is ${closeDistanceFromHOD.toFixed(2)}% below HOD ${hod.toFixed(2)} (max: ${maxCloseDistance}%) - closes too far below`);
-      return null; // Close is too far below HOD
+      // Only check if close is BELOW HOD (positive distance)
+      if (closeDistanceFromHOD > maxCloseDistance) {
+        console.log(`⏭️  ${symbol} - Close ${bar.c.toFixed(2)} is ${closeDistanceFromHOD.toFixed(2)}% below HOD ${hod.toFixed(2)} (max: ${maxCloseDistance}%) - closes too far below [LOOSE MODE]`);
+        return null; // Close is too far below HOD
+      }
+
+      console.log(`✅ ${symbol} - Close proximity check passed: ${bar.c.toFixed(2)} is ${closeDistanceFromHOD.toFixed(2)}% below HOD ${hod.toFixed(2)} [LOOSE MODE]`);
+    } else {
+      console.log(`✅ ${symbol} - Close proximity check SKIPPED [STRICT MODE - only HOD break matters]`);
     }
-
-    console.log(`✅ ${symbol} - Close proximity check passed: ${bar.c.toFixed(2)} is ${closeDistanceFromHOD.toFixed(2)}% below HOD ${hod.toFixed(2)}`);
 
     // Calculate candle metrics
     const totalRange = bar.h - bar.l;
@@ -2190,26 +2281,42 @@ export class GapScanner {
         ? `+${Math.abs(highDistanceFromHOD).toFixed(2)}%`
         : `-${Math.abs(highDistanceFromHOD).toFixed(2)}%`;
 
-      const hodDescription = requireStrictBreak ? 'broke HOD' : `near HOD (${((Math.abs(hod - bar.h) / hod) * 100).toFixed(1)}%)`;
+      // Calculate close distance for display and detail message
+      const closeDistanceFromHOD = ((hod - bar.c) / hod) * 100;
+      const maxCloseDistance = this.config.patterns.toppingTail5m.maxCloseDistanceFromHODPercent;
 
-      console.log(`✅ 5m TOPPING TAIL DETECTED: ${symbol} at ${this.formatETTime(timestamp)}`);
+      const modeText = requireStrictBreak ? 'STRICT MODE' : 'LOOSE MODE';
+      const hodDescription = requireStrictBreak ? 'broke HOD (strict)' : `near HOD (${((Math.abs(hod - bar.h) / hod) * 100).toFixed(1)}%)`;
+
+      console.log(`✅ 5m TOPPING TAIL DETECTED: ${symbol} at ${this.formatETTime(timestamp)} [${modeText}]`);
       console.log(`   📊 OHLC: O=${bar.o.toFixed(2)} H=${bar.h.toFixed(2)} L=${bar.l.toFixed(2)} C=${bar.c.toFixed(2)}`);
       console.log(`   ✓ HOD Break: ${hodDescription} (HOD=${hod.toFixed(2)})`);
-      console.log(`   ✓ Close Distance from HOD: ${closeDistanceFromHOD.toFixed(1)}% (max ${maxCloseDistance}%)`);
+      if (!requireStrictBreak) {
+        console.log(`   ✓ Close Distance from HOD: ${closeDistanceFromHOD.toFixed(1)}% (max ${maxCloseDistance}%) [LOOSE MODE FILTER]`);
+      } else {
+        console.log(`   ✓ Close Distance from HOD: ${closeDistanceFromHOD.toFixed(1)}% [STRICT MODE - FILTER DISABLED]`);
+      }
       console.log(`   ✓ Close Position: ${closePercent.toFixed(1)}% down from high (min ${minClosePercent}%)`);
       console.log(`   ✓ Shadow/Body Ratio: ${shadowToBodyRatio.toFixed(2)}x (min ${minRatio}x)`);
       console.log(`   ✓ Candle Color: ${candleColor}`);
       console.log(`   ✓ Volume: ${bar.v.toLocaleString()}`);
+
+      // Build detail message based on mode
+      const modeIndicator = requireStrictBreak ? '[STRICT]' : '[LOOSE]';
+      const detailMessage = requireStrictBreak
+        ? `${modeIndicator} 5m TT @ HOD $${hod.toFixed(2)} BROKE | ${closePercent.toFixed(0)}% down from high | ${shadowToBodyRatio.toFixed(1)}x shadow/body | ${candleColor} | Close $${bar.c.toFixed(2)}`
+        : `${modeIndicator} 5m TT @ HOD $${hod.toFixed(2)} | H:${highDistanceDisplay} C:${closeDistanceFromHOD.toFixed(1)}% below | ${closePercent.toFixed(0)}% down from high | ${shadowToBodyRatio.toFixed(1)}x shadow/body | ${candleColor} | Close $${bar.c.toFixed(2)}`;
 
       return {
         id: `${symbol}-${timestamp.getTime()}-${index}-ToppingTail5m`,
         timestamp: timestamp.getTime(),
         symbol,
         type: 'ToppingTail5m',
-        detail: `5m TT @ HOD $${hod.toFixed(2)} | H:${highDistanceDisplay} C:${closeDistanceFromHOD.toFixed(1)}% below | ${closePercent.toFixed(0)}% down from high | ${shadowToBodyRatio.toFixed(1)}x shadow/body | ${candleColor} | Close $${bar.c.toFixed(2)}`,
+        detail: detailMessage,
         price: bar.c,
         volume: alertVolume,
         gapPercent: gapPercent,
+        hod: hod,
         historical: true
       };
     }
@@ -2394,6 +2501,7 @@ export class GapScanner {
       price: currentBar.c,
       volume: alertVolume,
       gapPercent: gapPercent,
+      hod: hod,
       historical: true
     };
   }

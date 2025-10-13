@@ -262,8 +262,8 @@ export const defaultScannerConfig: ScannerConfig = {
       maxBarVolume: 50000000, // 50M shares max to filter data errors
       minShadowToBodyRatio: 0.5, // Upper shadow must be at least 0.5x the body
       requireStrictHODBreak: true, // Strict mode: high must break HOD
-      maxHighDistanceFromHODPercent: 50.0, // High can be within 20% of HOD (only in loose mode)
-      maxCloseDistanceFromHODPercent: 50.0, // Close must be within 15% of HOD
+      maxHighDistanceFromHODPercent: 15.0, // High can be within 20% of HOD (only in loose mode)
+      maxCloseDistanceFromHODPercent: 20.0, // Close must be within 15% of HOD
     },
 
     greenRun: {

@@ -9,6 +9,7 @@ export interface Alert {
   price: number;
   volume: number;
   gapPercent?: number;
+  hod?: number;           // High of Day at time of signal
   historical?: boolean;
 }
 
