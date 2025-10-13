@@ -256,11 +256,11 @@ export const defaultScannerConfig: ScannerConfig = {
     },
 
     toppingTail5m: {
-      minClosePercent: 0.0, // 60% down the candle
+      minClosePercent: 40.0, // 60% down the candle
       mustCloseRed: false,
       minBarVolume: 5000,
       maxBarVolume: 50000000, // 50M shares max to filter data errors
-      minShadowToBodyRatio: 0, // Upper shadow must be at least 0.5x the body
+      minShadowToBodyRatio: 0.5, // Upper shadow must be at least 0.5x the body
       requireStrictHODBreak: true, // Strict mode: high must break HOD
       maxHighDistanceFromHODPercent: 50.0, // High can be within 20% of HOD (only in loose mode)
       maxCloseDistanceFromHODPercent: 50.0, // Close must be within 15% of HOD

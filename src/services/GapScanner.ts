@@ -843,6 +843,10 @@ export class GapScanner {
     console.log(`📊 Performing initial gap stock scan...`);
     const gapStocks = await this.scanForGappers();
 
+    // Check last 4 5-minute candles for existing patterns on startup
+    console.log(`📜 Checking last 4 5-minute candles for patterns already in progress...`);
+    await this.checkStartupHistoricalPatterns();
+
     // Check if we should use WebSocket (anytime app is running with qualifying stocks)
     const useWebSocketScanning = this.useWebSocket &&
                                   this.webSocketScanner &&
@@ -1056,6 +1060,111 @@ export class GapScanner {
     console.log(`${'='.repeat(80)}`);
     console.log(`🔄 performScheduledBackfill() END`);
     console.log(`${'='.repeat(80)}\n`);
+  }
+
+  // Check the last 4 5-minute candles on startup to detect patterns already in progress
+  private async checkStartupHistoricalPatterns(): Promise<void> {
+    try {
+      console.log(`\n${'='.repeat(80)}`);
+      console.log(`📜 STARTUP HISTORICAL CHECK: Analyzing last 4 5-minute candles for existing patterns`);
+      console.log(`${'='.repeat(80)}`);
+
+      const gapStocksList = Array.from(this.gapStocks.values());
+      if (gapStocksList.length === 0) {
+        console.log('⏭️  No gap stocks to analyze');
+        return;
+      }
+
+      const now = this.getCurrentTime();
+      const todayStart = new Date(now);
+      todayStart.setHours(0, 0, 0, 0);
+
+      let totalPatternsFound = 0;
+
+      // Analyze each gap stock
+      for (const gapStock of gapStocksList) {
+        try {
+          console.log(`\n📊 Analyzing ${gapStock.symbol} for recent patterns...`);
+
+          // Get 5-minute bars for today
+          const bars5m = await this.get5MinuteBars(
+            gapStock.symbol,
+            todayStart,
+            now
+          );
+
+          if (bars5m.length === 0) {
+            console.log(`   ⏭️  No 5-minute bars found for ${gapStock.symbol}`);
+            continue;
+          }
+
+          // Get the last 4 candles (or fewer if less than 4 are available)
+          const last4Candles = bars5m.slice(-4);
+          console.log(`   📊 Found ${bars5m.length} total bars, analyzing last ${last4Candles.length} candles`);
+
+          // Get 1-minute bars for volume calculation
+          const dateString = now.toISOString().split('T')[0];
+          const bars1m = await this.getHistoricalMinuteBars(gapStock.symbol, dateString);
+
+          // Calculate cumulative volume up to current time
+          const configStart = this.getConfigStartHour();
+          const configEnd = this.getConfigEndHour();
+
+          let cumulativeVolume = 0;
+          for (const bar1m of bars1m) {
+            const etHour = this.getETHour(new Date(bar1m.t));
+            if (etHour >= configStart && etHour < configEnd && bar1m.t <= now.getTime()) {
+              cumulativeVolume += bar1m.v;
+            }
+          }
+
+          console.log(`   📊 Cumulative volume: ${(cumulativeVolume / 1000).toFixed(0)}k`);
+
+          // Calculate current HOD including pre-market
+          let currentHOD = gapStock.hod; // Start with stored HOD
+
+          // Check each of the last 4 candles for patterns
+          for (let i = 0; i < last4Candles.length; i++) {
+            const bar = last4Candles[i];
+            const barIndex = bars5m.indexOf(bar);
+            const timestamp = new Date(bar.t);
+
+            console.log(`   🔍 Checking candle ${i + 1}/${last4Candles.length} at ${this.formatETTime(timestamp)}`);
+
+            // Update HOD progressively
+            if (bar.h > currentHOD) {
+              currentHOD = bar.h;
+              console.log(`      📈 Updated HOD: ${currentHOD.toFixed(2)}`);
+            }
+
+            // Run pattern detection
+            const patterns = [
+              this.detectToppingTail5m(gapStock.symbol, bars5m, barIndex, currentHOD, timestamp, cumulativeVolume, gapStock.gapPercent),
+              this.detectGreenRunReject(gapStock.symbol, bars5m, barIndex, currentHOD, timestamp, cumulativeVolume, gapStock.gapPercent),
+            ];
+
+            // Fire any detected patterns
+            patterns.forEach(alert => {
+              if (alert) {
+                console.log(`   🔔 STARTUP PATTERN FOUND: ${gapStock.symbol} ${alert.type} at ${this.formatETTime(new Date(alert.timestamp))}`);
+                this.fireAlert(alert);
+                totalPatternsFound++;
+              }
+            });
+          }
+
+        } catch (error) {
+          console.warn(`   ⚠️  Failed to analyze ${gapStock.symbol}:`, error);
+        }
+      }
+
+      console.log(`\n${'='.repeat(80)}`);
+      console.log(`✅ STARTUP HISTORICAL CHECK COMPLETE: Found ${totalPatternsFound} patterns across ${gapStocksList.length} stocks`);
+      console.log(`${'='.repeat(80)}\n`);
+
+    } catch (error) {
+      console.error('Error in startup historical pattern check:', error);
+    }
   }
 
   // Perform continuous backfill and fire new alerts with sound notifications
@@ -2111,8 +2220,14 @@ export class GapScanner {
   private detectGreenRunReject(symbol: string, bars5m: PolygonBar[], index: number, hod: number, timestamp: Date, cumulativeVolume?: number, gapPercent?: number): Alert | null {
     // bars5m are native 5-minute bars from Polygon - much simpler!
 
+    console.log(`\n🔍 detectGreenRunReject called for ${symbol} at ${this.formatETTime(timestamp)}`);
+    console.log(`   index=${index}, bars5m.length=${bars5m.length}, hod=${hod.toFixed(2)}, cumulativeVolume=${cumulativeVolume ? (cumulativeVolume/1000).toFixed(1) + 'K' : 'N/A'}`);
+
     // Need at least 4 green bars + 1 red bar
-    if (index < 4) return null;
+    if (index < 4) {
+      console.log(`   ❌ INSUFFICIENT HISTORY: index=${index} < 4 - need at least 4 previous bars`);
+      return null;
+    }
 
     // Current bar should be red (the rejection bar)
     const currentBar = bars5m[index];
@@ -2136,14 +2251,19 @@ export class GapScanner {
     // Must be a red candle (close < open, and not a doji)
     // Use a small epsilon to avoid floating point comparison issues
     const epsilon = 0.001;
-    const isRed = (currentBar.o - currentBar.c) > epsilon;
+    const redDiff = currentBar.o - currentBar.c;
+    const isRed = redDiff > epsilon;
+    const percentDiff = ((currentBar.c - currentBar.o) / currentBar.o) * 100;
+
+    console.log(`   Current bar: O=${currentBar.o.toFixed(3)}, C=${currentBar.c.toFixed(3)}, Diff=${redDiff.toFixed(3)} (${percentDiff.toFixed(3)}%)`);
 
     if (!isRed) {
       // Not red enough - could be doji or green
+      console.log(`   ❌ NOT RED: Diff ${redDiff.toFixed(3)} <= epsilon ${epsilon} - candle is ${redDiff > 0 ? 'barely red/doji' : 'GREEN'}`);
       return null;
     }
 
-    console.log(`📊 ${symbol} - Checking COMPLETED 5m RED candle at ${this.formatETTime(timestamp)}: O=${currentBar.o.toFixed(3)}, C=${currentBar.c.toFixed(3)}, Diff=${(currentBar.o - currentBar.c).toFixed(3)} RED ✓`);
+    console.log(`   ✅ RED CANDLE CONFIRMED: ${this.formatETTime(timestamp)} - Diff=${redDiff.toFixed(3)} (${percentDiff.toFixed(3)}%)`);
 
     // Count consecutive green bars before the current red bar
     let consecutiveGreen = 0;
@@ -2175,8 +2295,9 @@ export class GapScanner {
       const epsilon = 0.001;
       const isGreen = (bar.c - bar.o) > epsilon;
       const priceDiff = bar.c - bar.o;
+      const percentDiff = ((bar.c - bar.o) / bar.o) * 100;
 
-      console.log(`   Lookback ${lookback}: 5m candle at ${this.formatETTime(lookbackBarTime)}: O=${bar.o.toFixed(3)}, C=${bar.c.toFixed(3)}, Diff=${priceDiff.toFixed(3)} ${isGreen ? 'GREEN ✓' : 'RED/DOJI ✗'}`);
+      console.log(`   Lookback ${lookback}: 5m candle at ${this.formatETTime(lookbackBarTime)}: O=${bar.o.toFixed(3)}, C=${bar.c.toFixed(3)}, Diff=${priceDiff.toFixed(3)} (${percentDiff.toFixed(3)}%) ${isGreen ? 'GREEN ✓' : 'RED/DOJI ✗'}`);
 
       if (isGreen) {
         if (consecutiveGreen === 0) {
@@ -2208,6 +2329,7 @@ export class GapScanner {
 
     // Check if we meet the minimum consecutive green requirement
     if (consecutiveGreen < this.config.patterns.greenRun.minConsecutiveGreen) {
+      console.log(`   ❌ MIN GREEN FILTER: Found ${consecutiveGreen} green candles < minimum ${this.config.patterns.greenRun.minConsecutiveGreen} required`);
       return null;
     }
 
@@ -2221,8 +2343,11 @@ export class GapScanner {
 
     const totalGainPercent = ((greenRunHighPrice - greenRunStartPrice) / greenRunStartPrice) * 100;
 
+    console.log(`   📊 Green run gain: ${totalGainPercent.toFixed(2)}% (${greenRunStartPrice.toFixed(3)} → ${greenRunHighPrice.toFixed(3)})`);
+
     // Check if gain meets minimum requirement
     if (totalGainPercent < this.config.patterns.greenRun.minRunGainPercent) {
+      console.log(`   ❌ MIN GAIN FILTER: Gain ${totalGainPercent.toFixed(2)}% < minimum ${this.config.patterns.greenRun.minRunGainPercent}% required`);
       return null;
     }
 
