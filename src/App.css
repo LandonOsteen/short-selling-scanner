@@ -3,7 +3,7 @@
 @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap');
 
 :root {
-  /* Mercedes G-Class Color Palette - Deep Blacks with Premium Accents */
+  /* Monochromatic Color Palette - Deep Blacks with Grayscale Accents */
   --bg-primary: #0a0a0a;
   --bg-secondary: #161616;
   --bg-tertiary: #1e1e1e;
@@ -12,10 +12,10 @@
   --bg-input: #1a1a1a;
   --bg-window: #0f0f0f;
 
-  /* G-Class Premium Metal Accents */
-  --accent-primary: #c9aa96; /* Warm champagne gold */
-  --accent-secondary: #a08b7a;
-  --accent-luxury: #e6d7c8; /* Light champagne */
+  /* Monochromatic Premium Accents */
+  --accent-primary: #d0d0d0; /* Light gray */
+  --accent-secondary: #9a9a9a;
+  --accent-luxury: #f5f5f5; /* Nearly white */
   --accent-success: #7fb069; /* Military green */
   --accent-warning: #f4a261; /* Amber warning */
   --accent-danger: #e63946; /* Bold red */
@@ -26,13 +26,13 @@
   --text-secondary: #b8b8b8;
   --text-muted: #707070;
   --text-disabled: #404040;
-  --text-accent: #c9aa96;
+  --text-accent: #d0d0d0;
 
-  /* Mercedes Design Language Borders */
+  /* Monochromatic Design Language Borders */
   --border-primary: #2a2a2a;
   --border-secondary: #1f1f1f;
-  --border-luxury: #c9aa96;
-  --border-focus: #e6d7c8;
+  --border-luxury: #d0d0d0;
+  --border-focus: #f5f5f5;
 
   /* G-Class Design System */
   --radius: 4px; /* Standard radius */
@@ -86,7 +86,7 @@ body {
   right: 0;
   bottom: 0;
   background:
-    radial-gradient(ellipse at top, rgba(201, 170, 150, 0.02) 0%, transparent 50%),
+    radial-gradient(ellipse at top, rgba(255, 255, 255, 0.02) 0%, transparent 50%),
     repeating-linear-gradient(
       90deg,
       transparent,
@@ -164,7 +164,7 @@ body {
   background: var(--bg-hover);
   border-color: var(--border-luxury);
   transform: translateY(-2px);
-  box-shadow: 0 4px 16px rgba(201, 170, 150, 0.1);
+  box-shadow: 0 4px 16px rgba(208, 208, 208, 0.1);
 }
 
 .toggle-btn.active {
@@ -173,7 +173,7 @@ body {
   font-weight: var(--font-weight-bold);
   border-color: var(--accent-luxury);
   box-shadow:
-    0 0 32px rgba(201, 170, 150, 0.4),
+    0 0 32px rgba(208, 208, 208, 0.4),
     inset 0 1px 0 rgba(255, 255, 255, 0.2);
   transform: translateY(0);
 }
@@ -250,7 +250,7 @@ body {
   border-color: var(--accent-luxury);
   box-shadow:
     inset 0 2px 4px rgba(0, 0, 0, 0.2),
-    0 0 8px rgba(201, 170, 150, 0.3);
+    0 0 8px rgba(208, 208, 208, 0.3);
 }
 
 .alert-toggle-label input[type="checkbox"]:checked::after {
@@ -325,7 +325,7 @@ body {
   border-color: var(--accent-luxury);
   box-shadow:
     inset 0 2px 8px rgba(0, 0, 0, 0.3),
-    0 0 16px rgba(201, 170, 150, 0.2);
+    0 0 16px rgba(208, 208, 208, 0.2);
 }
 
 .sound-preview-btn {

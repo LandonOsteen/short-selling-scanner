@@ -8,7 +8,7 @@
   position: relative;
 }
 
-/* G-Class Header Styling */
+/* Monochromatic Header Styling */
 .backtesting-header {
   background: linear-gradient(180deg, var(--bg-secondary) 0%, var(--bg-tertiary) 100%);
   border-bottom: 2px solid var(--border-luxury);
@@ -60,7 +60,7 @@
   padding-left: 16px;
 }
 
-/* G-Class Control Panel */
+/* Monochromatic Control Panel */
 .backtest-controls {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr auto;
@@ -168,10 +168,10 @@
 
 .backtest-button.running {
   background: linear-gradient(135deg, var(--accent-info) 0%, var(--accent-secondary) 100%);
-  animation: g-class-pulse 2s ease-in-out infinite;
+  animation: monochrome-pulse 2s ease-in-out infinite;
 }
 
-@keyframes g-class-pulse {
+@keyframes monochrome-pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.8; }
 }
@@ -457,7 +457,7 @@
   }
 }
 
-/* G-Class Scrollbar */
+/* Monochromatic Scrollbar */
 .backtest-results::-webkit-scrollbar,
 .table-container::-webkit-scrollbar {
   width: 8px;
@@ -480,5 +480,5 @@
 .backtest-results::-webkit-scrollbar-thumb:hover,
 .table-container::-webkit-scrollbar-thumb:hover {
   background: var(--accent-luxury);
-  box-shadow: 0 0 8px rgba(201, 170, 150, 0.4);
+  box-shadow: 0 0 8px rgba(208, 208, 208, 0.4);
 }

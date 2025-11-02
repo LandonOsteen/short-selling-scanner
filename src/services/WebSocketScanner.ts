@@ -562,7 +562,17 @@ export class WebSocketScanner {
     bars5m.push(candle);
     const index = bars5m.length - 1; // Current candle is the last one
 
-    console.log(`   📊 Built history of ${bars5m.length} 5-minute candles (${bars5m.length - 1} from REST + 1 current) for pattern detection`);
+    console.log(`   📊 Built history of ${bars5m.length} 5-minute candles for pattern detection`);
+    console.log(`   📊 Current candle index: ${index}, timestamp: ${this.formatETTime(timestamp)}`);
+
+    // CRITICAL: Pattern detection needs at least 5 bars (index >= 4)
+    if (index < 4) {
+      console.error(`   🚨 INSUFFICIENT BARS FOR PATTERN DETECTION!`);
+      console.error(`   📊 Index: ${index}, Need: >= 4 (at least 5 total bars)`);
+      console.error(`   📊 This will cause pattern detection to return NULL`);
+      console.error(`   💡 This is why REST works but WebSocket doesn't - REST has full history!`);
+      return; // Don't even try pattern detection
+    }
 
     // Convert BarData to match expected format
     const barsWithProperties = bars5m.map(bar => ({
@@ -621,33 +631,64 @@ export class WebSocketScanner {
       let olderBars: BarData[] = [];
 
       if (data.results && data.results.length > 0) {
-        // Get bars from REST API, but exclude the most recent 3 periods (15 minutes)
-        // These might not be published yet due to API lag
-        const cutoffTime = currentTimestamp.getTime() - (15 * 60 * 1000); // 15 minutes ago
+        // Get ALL bars from REST API initially
+        olderBars = data.results.map((bar: any) => ({
+          timestamp: bar.t,
+          open: bar.o,
+          high: bar.h,
+          low: bar.l,
+          close: bar.c,
+          volume: bar.v
+        }));
 
-        olderBars = data.results
-          .filter((bar: any) => bar.t < cutoffTime)
-          .map((bar: any) => ({
-            timestamp: bar.t,
-            open: bar.o,
-            high: bar.h,
-            low: bar.l,
-            close: bar.c,
-            volume: bar.v
-          }));
-
-        console.log(`   📊 Fetched ${olderBars.length} older 5-minute bars from REST API (before ${new Date(cutoffTime).toLocaleTimeString()})`);
+        console.log(`   📊 Fetched ${olderBars.length} 5-minute bars from REST API`);
       }
 
       // STEP 2: Build recent bars from our 1-minute buffer (real-time, no lag)
       const recentBars = this.buildRecent5MinBarsFromBuffer(state, currentTimestamp);
       console.log(`   📊 Built ${recentBars.length} recent 5-minute bars from 1-minute buffer`);
 
-      // STEP 3: Combine and return last 20 bars
-      const allBars = [...olderBars, ...recentBars];
+      // STEP 3: Combine, deduplicate, and return last 20 bars
+      // Merge bars from both sources, with buffer bars taking precedence for the same timestamps
+      const barMap = new Map<number, BarData>();
+
+      // Add REST API bars first
+      olderBars.forEach(bar => {
+        barMap.set(bar.timestamp, bar);
+      });
+
+      // Overwrite with buffer bars (more accurate, real-time)
+      recentBars.forEach(bar => {
+        barMap.set(bar.timestamp, bar);
+      });
+
+      // Sort by timestamp and take last 20
+      const allBars = Array.from(barMap.values()).sort((a, b) => a.timestamp - b.timestamp);
       const history = allBars.slice(-20);
 
-      console.log(`   📊 Total history: ${history.length} bars (${olderBars.length} from REST + ${recentBars.length} from buffer)`);
+      console.log(`   📊 Total history: ${history.length} bars (${olderBars.length} REST + ${recentBars.length} buffer = ${barMap.size} unique, using last 20)`);
+
+      // CRITICAL: Check if we have enough bars for pattern detection
+      if (history.length < 5) {
+        console.error(`   🚨 INSUFFICIENT HISTORY: Only ${history.length} bars available, need at least 5 for pattern detection!`);
+        console.error(`   📊 REST API bars: ${olderBars.length}, Buffer bars: ${recentBars.length}`);
+        console.error(`   🔍 Buffer has ${state.minuteCandles.length} 1-minute candles`);
+
+        // FALLBACK: If REST+Buffer didn't give us enough, try building MORE from buffer with relaxed rules
+        if (history.length < 5 && state.minuteCandles.length >= 20) {
+          console.log(`   🔄 FALLBACK: Attempting to build more bars from 1-minute buffer with relaxed rules...`);
+          const fallbackBars = this.buildMoreBarsFromBuffer(state, currentTimestamp, 20);
+          console.log(`   📊 Fallback built ${fallbackBars.length} additional bars`);
+
+          // Merge with existing bars
+          fallbackBars.forEach(bar => barMap.set(bar.timestamp, bar));
+          const mergedBars = Array.from(barMap.values()).sort((a, b) => a.timestamp - b.timestamp);
+          const fallbackHistory = mergedBars.slice(-20);
+
+          console.log(`   📊 After fallback: ${fallbackHistory.length} total bars`);
+          return fallbackHistory;
+        }
+      }
 
       return history;
 
@@ -658,38 +699,101 @@ export class WebSocketScanner {
   }
 
   /**
+   * FALLBACK: Build as many bars as possible from buffer with very relaxed rules
+   * Used when REST API + normal buffer building didn't provide enough bars
+   */
+  private buildMoreBarsFromBuffer(state: SymbolState, currentTimestamp: Date, targetCount: number): BarData[] {
+    const bars: BarData[] = [];
+
+    if (state.minuteCandles.length < 10) {
+      return bars; // Need at least 10 candles
+    }
+
+    // Sort candles by timestamp
+    const sortedCandles = [...state.minuteCandles].sort((a, b) => a.timestamp - b.timestamp);
+
+    // Try to build 5-minute bars by grouping every 5 consecutive candles
+    for (let i = 0; i <= sortedCandles.length - 5; i++) {
+      const fiveCandles = sortedCandles.slice(i, i + 5);
+
+      // Check if these 5 candles are reasonably close together (within 10 minutes)
+      const timeSpan = fiveCandles[4].timestamp - fiveCandles[0].timestamp;
+      if (timeSpan > 10 * 60 * 1000) {
+        continue; // Skip if candles are too far apart
+      }
+
+      // Determine the period start time from the first candle
+      const firstCandleTime = new Date(fiveCandles[0].timestamp);
+      const etTime = new Date(firstCandleTime.toLocaleString("en-US", {timeZone: "America/New_York"}));
+      const periodStart = Math.floor(etTime.getMinutes() / 5) * 5;
+      const periodTime = new Date(etTime);
+      periodTime.setMinutes(periodStart, 0, 0);
+
+      // Build the 5-minute bar
+      bars.push({
+        timestamp: periodTime.getTime(),
+        open: fiveCandles[0].open,
+        high: Math.max(...fiveCandles.map(c => c.high)),
+        low: Math.min(...fiveCandles.map(c => c.low)),
+        close: fiveCandles[4].close,
+        volume: fiveCandles.reduce((sum, c) => sum + c.volume, 0)
+      });
+
+      if (bars.length >= targetCount) {
+        break; // Stop if we have enough
+      }
+
+      // Skip ahead by 4 to get non-overlapping periods (will increment by 1 in loop)
+      i += 4;
+    }
+
+    return bars;
+  }
+
+  /**
    * Build recent 5-minute bars from 1-minute buffer
-   * This avoids REST API lag for the most recent periods
+   * This provides real-time data without waiting for REST API to publish
    */
   private buildRecent5MinBarsFromBuffer(state: SymbolState, currentTimestamp: Date): BarData[] {
     const recentBars: BarData[] = [];
 
+    if (state.minuteCandles.length === 0) {
+      console.log(`   ⚠️  No 1-minute candles in buffer for building 5-minute bars`);
+      return recentBars;
+    }
+
     // Get ET time for the current timestamp
     const etTime = new Date(currentTimestamp.toLocaleString("en-US", {timeZone: "America/New_York"}));
     const currentMinute = etTime.getMinutes();
+    const currentHour = etTime.getHours();
     const currentPeriodStart = Math.floor(currentMinute / 5) * 5;
 
-    // Build up to 4 recent 5-minute candles (20 minutes of recent history)
-    // Go backwards from the period before the current one
-    for (let periodsBack = 4; periodsBack > 0; periodsBack--) {
-      const periodStart = currentPeriodStart - (periodsBack * 5);
-      const periodTime = new Date(etTime);
-      periodTime.setMinutes(periodStart, 0, 0);
+    // Build as many 5-minute bars as possible from our buffer
+    // Try to go back far enough to overlap with REST API data
+    // Look back up to 2 hours (24 periods) to ensure good coverage
+    const maxPeriodsBack = Math.min(24, Math.floor(state.minuteCandles.length / 5));
 
-      // Try to build this 5-minute candle from our buffer
+    console.log(`   🔨 Building 5-min bars from buffer: ${state.minuteCandles.length} 1-min candles available, trying up to ${maxPeriodsBack} periods`);
+
+    for (let periodsBack = maxPeriodsBack; periodsBack > 0; periodsBack--) {
+      // Calculate the period start time, handling hour boundaries
+      const targetPeriodStart = currentPeriodStart - (periodsBack * 5);
+      const periodTime = new Date(etTime);
+      periodTime.setMinutes(targetPeriodStart, 0, 0);
+
+      // Collect the 5 1-minute candles for this period
       const fiveMinCandles: MinuteCandle[] = [];
 
       for (let offset = 0; offset < 5; offset++) {
-        const targetMinute = periodStart + offset;
+        const targetMinute = targetPeriodStart + offset;
         const targetTime = new Date(periodTime);
         targetTime.setMinutes(targetMinute);
         const targetTimestamp = targetTime.getTime();
 
+        // Find the candle that matches this minute
+        // Use a wider tolerance window to handle timing variations
         const candle = state.minuteCandles.find(c => {
-          const cTime = new Date(c.timestamp);
-          const cET = new Date(cTime.toLocaleString("en-US", {timeZone: "America/New_York"}));
-          return cET.getMinutes() === targetMinute % 60 && // Handle hour rollover
-                 Math.abs(c.timestamp - targetTimestamp) < 120000;
+          return Math.abs(c.timestamp - targetTimestamp) < 180000; // Within 3 minutes tolerance
         });
 
         if (candle) {
@@ -697,12 +801,16 @@ export class WebSocketScanner {
         }
       }
 
-      // Only add if we have all 5 candles for this period
-      if (fiveMinCandles.length === 5) {
+      // Add if we have all 5 candles, or at least 4 (allow 1 missing for tolerance)
+      if (fiveMinCandles.length >= 4) {
+        if (fiveMinCandles.length < 5) {
+          console.log(`   ⚠️  Built 5-min bar with only ${fiveMinCandles.length}/5 candles at ${this.formatETTime(periodTime)}`);
+        }
         recentBars.push(this.aggregate5MinCandle(fiveMinCandles, periodTime));
       }
     }
 
+    console.log(`   ✅ Built ${recentBars.length} 5-minute bars from 1-minute buffer`);
     return recentBars;
   }
 
