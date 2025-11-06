@@ -7,7 +7,8 @@ export interface Alert {
   type: PatternType;
   detail: string;
   price: number;
-  volume: number;
+  volume: number;         // Cumulative session volume
+  barVolume?: number;     // Volume of the specific bar that triggered the alert
   gapPercent?: number;
   hod?: number;           // High of Day at time of signal
   historical?: boolean;

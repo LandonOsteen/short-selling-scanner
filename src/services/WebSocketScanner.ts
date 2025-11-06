@@ -189,18 +189,23 @@ export class WebSocketScanner {
     const now = new Date();
 
     // Calculate market start time based on config (e.g., 7:00 AM or 4:00 AM ET)
-    const etNow = new Date(now.toLocaleString("en-US", {timeZone: "America/New_York"}));
     const [startHour, startMin] = this.config.marketHours.startTime.split(':').map(Number);
 
-    // Create market start time in ET today
-    const marketStartET = new Date(etNow.getFullYear(), etNow.getMonth(), etNow.getDate(), startHour, startMin, 0);
+    // Get today's date in ET timezone
+    const etDateStr = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    }).format(now);
+    const [month, day, year] = etDateStr.split('/');
+    const dateString = `${year}-${month}-${day}`;
 
-    // Convert ET time to UTC timestamp for filtering
-    // This handles DST automatically
-    const marketStartUTC = Date.parse(marketStartET.toLocaleString("en-US", {timeZone: "UTC"}));
-
-    // Get today's date string for API
-    const dateString = `${etNow.getFullYear()}-${String(etNow.getMonth() + 1).padStart(2, '0')}-${String(etNow.getDate()).padStart(2, '0')}`;
+    // Create market start time in ET timezone
+    // We build a date string and let the system parse it
+    const marketStartETStr = `${year}-${month}-${day}T${String(startHour).padStart(2, '0')}:${String(startMin).padStart(2, '0')}:00`;
+    const marketStartET = new Date(marketStartETStr);
+    const marketStartUTC = marketStartET.getTime();
 
     // Get previous trading day for after-hours data
     const previousDate = this.getPreviousTradingDay(dateString);
@@ -321,8 +326,7 @@ export class WebSocketScanner {
       // Filter to after-hours (4:00-8:00 PM ET = 16-20 hours)
       const afterHoursBars = data.results.filter((bar: any) => {
         const barTime = new Date(bar.t);
-        const etTime = new Date(barTime.toLocaleString("en-US", {timeZone: "America/New_York"}));
-        const etHour = etTime.getHours() + etTime.getMinutes() / 60;
+        const etHour = this.getETHour(barTime);
         return etHour >= 16 && etHour < 20;
       });
 
@@ -427,8 +431,8 @@ export class WebSocketScanner {
 
     const latestCandle = state.minuteCandles[state.minuteCandles.length - 1];
     const candleTime = new Date(latestCandle.timestamp);
-    const etTime = new Date(candleTime.toLocaleString("en-US", {timeZone: "America/New_York"}));
-    const minutes = etTime.getMinutes();
+    const etComponents = this.getETComponents(candleTime);
+    const minutes = etComponents.minute;
 
     // Check if this candle COMPLETES a 5-minute period (minutes = 4, 9, 14, 19, 24, etc.)
     // This is the LAST candle of a 5-minute period, so we can process immediately
@@ -442,12 +446,22 @@ export class WebSocketScanner {
     }
 
     // Calculate the period that just completed with this candle
-    // Use setMinutes to handle hour boundaries automatically
-    const completedPeriodTime = new Date(etTime);
+    // Create ET date object for calculations
     const periodStartMinute = Math.floor(minutes / 5) * 5; // Round down to nearest 5
-    completedPeriodTime.setMinutes(periodStartMinute, 0, 0);
-    const completedPeriodTimestamp = completedPeriodTime.getTime();
-    const completedPeriodStart = completedPeriodTime.getMinutes();
+
+    // Build the completed period timestamp in ET, then convert back to UTC
+    const etDateStr = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    }).format(candleTime);
+    const [month, day, year] = etDateStr.split('/');
+
+    // Create a date string for the period start in ET timezone
+    const completedPeriodET = new Date(`${year}-${month}-${day}T${String(etComponents.hour).padStart(2, '0')}:${String(periodStartMinute).padStart(2, '0')}:00`);
+    const completedPeriodTimestamp = completedPeriodET.getTime();
+    const completedPeriodStart = periodStartMinute;
 
     // Check if we already processed this period
     if (completedPeriodTimestamp <= state.lastProcessed5MinBoundary) {
@@ -455,10 +469,10 @@ export class WebSocketScanner {
     }
 
     const completedPeriodEnd = (completedPeriodStart + 4) % 60;
-    const completedHour = completedPeriodTime.getHours();
+    const completedHour = etComponents.hour;
 
     console.log(`\n${'⏰'.repeat(40)}`);
-    console.log(`⏰ ${symbol} - 5-MIN PERIOD COMPLETED with ${this.formatETTime(etTime)} candle`);
+    console.log(`⏰ ${symbol} - 5-MIN PERIOD COMPLETED with ${this.formatETTime(candleTime)} candle`);
     console.log(`   ✅ Processing COMPLETED period: ${completedHour}:${String(completedPeriodStart).padStart(2,'0')}-${completedHour}:${String(completedPeriodEnd).padStart(2,'0')}`);
     console.log(`   ⚡ INSTANT ALERT: No delay - processing immediately!`);
     console.log(`${'⏰'.repeat(40)}`);
@@ -469,15 +483,12 @@ export class WebSocketScanner {
 
     for (let offset = 0; offset < 5; offset++) {
       const targetMinute = completedPeriodStart + offset;
-      const targetTime = new Date(completedPeriodTime);
-      targetTime.setMinutes(targetMinute);
-      const targetTimestamp = targetTime.getTime();
 
       const candle = state.minuteCandles.find(c => {
         const cTime = new Date(c.timestamp);
-        const cET = new Date(cTime.toLocaleString("en-US", {timeZone: "America/New_York"}));
-        return cET.getMinutes() === targetMinute &&
-               Math.abs(c.timestamp - targetTimestamp) < 120000; // Within 2 minutes tolerance
+        const cET = this.getETComponents(cTime);
+        return cET.minute === targetMinute &&
+               Math.abs(cET.hour - completedHour) < 2; // Within same hour or adjacent
       });
 
       if (candle) {
@@ -493,7 +504,7 @@ export class WebSocketScanner {
     }
 
     // Build 5-minute candle from the 5 1-minute candles
-    const fiveMinCandle = this.aggregate5MinCandle(required1MinCandles, completedPeriodTime);
+    const fiveMinCandle = this.aggregate5MinCandle(required1MinCandles, completedPeriodET);
 
     console.log(`   📊 5m Candle [${completedPeriodStart}:00-${completedPeriodStart + 4}:59]: O:${fiveMinCandle.open.toFixed(2)} H:${fiveMinCandle.high.toFixed(2)} L:${fiveMinCandle.low.toFixed(2)} C:${fiveMinCandle.close.toFixed(2)} V:${fiveMinCandle.volume}`);
 
@@ -501,7 +512,7 @@ export class WebSocketScanner {
     state.lastProcessed5MinBoundary = completedPeriodTimestamp;
 
     // Run pattern detection on the 5-minute candle (async - don't await to avoid blocking)
-    this.detectPatterns(symbol, state, fiveMinCandle, completedPeriodTime)
+    this.detectPatterns(symbol, state, fiveMinCandle, completedPeriodET)
       .catch(error => {
         console.error(`❌ Error in pattern detection for ${symbol}:`, error);
       });
@@ -534,15 +545,26 @@ export class WebSocketScanner {
     console.log(`\n🔍 Running pattern detection for ${symbol} at ${this.formatETTime(timestamp)}...`);
 
     // FILTER 1: Check if within configured market hours window (match REST behavior)
-    const etTime = new Date(timestamp.toLocaleString("en-US", {timeZone: "America/New_York"}));
-    const etHour = etTime.getHours() + etTime.getMinutes() / 60;
+    // Use proper ET timezone conversion with Intl.DateTimeFormat
+    const formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      hour: 'numeric',
+      minute: 'numeric',
+      hour12: false
+    });
+
+    const parts = formatter.formatToParts(timestamp);
+    const hour = parseInt(parts.find(p => p.type === 'hour')?.value || '0');
+    const minute = parseInt(parts.find(p => p.type === 'minute')?.value || '0');
+    const etHour = hour + minute / 60;
+
     const [startHour, startMin] = this.config.marketHours.startTime.split(':').map(Number);
     const [endHour, endMin] = this.config.marketHours.endTime.split(':').map(Number);
     const configStart = startHour + startMin / 60;
     const configEnd = endHour + endMin / 60;
 
     if (etHour < configStart || etHour >= configEnd) {
-      console.log(`   ⏰ FILTERED OUT: ${symbol} at ${this.formatETTime(timestamp)} (ET ${etHour.toFixed(2)}) - outside ${configStart.toFixed(1)}-${configEnd.toFixed(1)} hours - SKIPPING DETECTION`);
+      console.log(`   ⏰ FILTERED OUT: ${symbol} at ${this.formatETTime(timestamp)} (ET ${etHour.toFixed(2)} = ${hour}:${minute.toString().padStart(2, '0')}) - outside ${configStart.toFixed(1)}-${configEnd.toFixed(1)} hours - SKIPPING DETECTION`);
       return;
     }
 
@@ -724,10 +746,18 @@ export class WebSocketScanner {
 
       // Determine the period start time from the first candle
       const firstCandleTime = new Date(fiveCandles[0].timestamp);
-      const etTime = new Date(firstCandleTime.toLocaleString("en-US", {timeZone: "America/New_York"}));
-      const periodStart = Math.floor(etTime.getMinutes() / 5) * 5;
-      const periodTime = new Date(etTime);
-      periodTime.setMinutes(periodStart, 0, 0);
+      const etComponents = this.getETComponents(firstCandleTime);
+      const periodStart = Math.floor(etComponents.minute / 5) * 5;
+
+      // Create period time
+      const etDateStr = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/New_York',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+      }).format(firstCandleTime);
+      const [month, day, year] = etDateStr.split('/');
+      const periodTime = new Date(`${year}-${month}-${day}T${String(etComponents.hour).padStart(2, '0')}:${String(periodStart).padStart(2, '0')}:00`);
 
       // Build the 5-minute bar
       bars.push({
@@ -763,9 +793,9 @@ export class WebSocketScanner {
     }
 
     // Get ET time for the current timestamp
-    const etTime = new Date(currentTimestamp.toLocaleString("en-US", {timeZone: "America/New_York"}));
-    const currentMinute = etTime.getMinutes();
-    const currentHour = etTime.getHours();
+    const etComponents = this.getETComponents(currentTimestamp);
+    const currentMinute = etComponents.minute;
+    const currentHour = etComponents.hour;
     const currentPeriodStart = Math.floor(currentMinute / 5) * 5;
 
     // Build as many 5-minute bars as possible from our buffer
@@ -775,11 +805,22 @@ export class WebSocketScanner {
 
     console.log(`   🔨 Building 5-min bars from buffer: ${state.minuteCandles.length} 1-min candles available, trying up to ${maxPeriodsBack} periods`);
 
+    // Get date string for building ET timestamps
+    const etDateStr = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    }).format(currentTimestamp);
+    const [month, day, year] = etDateStr.split('/');
+
     for (let periodsBack = maxPeriodsBack; periodsBack > 0; periodsBack--) {
       // Calculate the period start time, handling hour boundaries
       const targetPeriodStart = currentPeriodStart - (periodsBack * 5);
-      const periodTime = new Date(etTime);
-      periodTime.setMinutes(targetPeriodStart, 0, 0);
+      const targetHour = targetPeriodStart < 0 ? currentHour - 1 : currentHour;
+      const targetMinute = targetPeriodStart < 0 ? 60 + targetPeriodStart : targetPeriodStart;
+
+      const periodTime = new Date(`${year}-${month}-${day}T${String(targetHour).padStart(2, '0')}:${String(targetMinute).padStart(2, '0')}:00`);
 
       // Collect the 5 1-minute candles for this period
       const fiveMinCandles: MinuteCandle[] = [];
@@ -1045,11 +1086,45 @@ export class WebSocketScanner {
   }
 
   /**
+   * Get ET hour from a Date (with proper timezone conversion)
+   */
+  private getETHour(date: Date): number {
+    const formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      hour: 'numeric',
+      minute: 'numeric',
+      hour12: false
+    });
+
+    const parts = formatter.formatToParts(date);
+    const hour = parseInt(parts.find(p => p.type === 'hour')?.value || '0');
+    const minute = parseInt(parts.find(p => p.type === 'minute')?.value || '0');
+    return hour + minute / 60;
+  }
+
+  /**
+   * Get ET components from a Date (with proper timezone conversion)
+   */
+  private getETComponents(date: Date): { hour: number; minute: number } {
+    const formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      hour: 'numeric',
+      minute: 'numeric',
+      hour12: false
+    });
+
+    const parts = formatter.formatToParts(date);
+    const hour = parseInt(parts.find(p => p.type === 'hour')?.value || '0');
+    const minute = parseInt(parts.find(p => p.type === 'minute')?.value || '0');
+    return { hour, minute };
+  }
+
+  /**
    * Format time in ET
    */
   private formatETTime(date: Date): string {
-    const etTime = new Date(date.toLocaleString("en-US", {timeZone: "America/New_York"}));
-    return etTime.toLocaleTimeString('en-US', {
+    return date.toLocaleTimeString('en-US', {
+      timeZone: 'America/New_York',
       hour12: false,
       hour: '2-digit',
       minute: '2-digit',

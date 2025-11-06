@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './App.css';
 import HODBreakFeed from './components/HODBreakFeed';
 import HistoricalTesting from './components/HistoricalTesting';
@@ -25,6 +25,16 @@ function App() {
   const [voiceAlertsEnabled, setVoiceAlertsEnabled] = useState(false);
   const [soundAlertsEnabled, setSoundAlertsEnabled] = useState(false);
   const [selectedSound, setSelectedSound] = useState('alert');
+
+  // Use refs to avoid stale closure in alert callback
+  const soundAlertsEnabledRef = useRef(soundAlertsEnabled);
+  const selectedSoundRef = useRef(selectedSound);
+
+  // Keep refs up to date
+  useEffect(() => {
+    soundAlertsEnabledRef.current = soundAlertsEnabled;
+    selectedSoundRef.current = selectedSound;
+  }, [soundAlertsEnabled, selectedSound]);
 
   // Enable/disable sound service when sound alerts toggle
   useEffect(() => {
@@ -70,6 +80,14 @@ function App() {
             totalAlerts: prev.totalAlerts + 1,
             lastUpdate: new Date().toLocaleTimeString()
           }));
+
+          // Play sound notification if enabled (use ref to avoid stale closure)
+          if (soundAlertsEnabledRef.current) {
+            console.log(`🔊 Playing sound: ${selectedSoundRef.current}`);
+            soundService.playSound(selectedSoundRef.current);
+          } else {
+            console.log(`🔇 Sound alerts disabled - skipping sound`);
+          }
         });
 
         // Backfill historical data if accessing after configured start time

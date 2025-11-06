@@ -1115,18 +1115,43 @@ export class GapScanner {
             continue;
           }
 
-          // Get the last 4 candles (or fewer if less than 4 are available)
-          const last4Candles = bars5m.slice(-4);
-          console.log(`   📊 Found ${bars5m.length} total bars, analyzing last ${last4Candles.length} candles`);
+          // CRITICAL: Filter bars to only include those within configured market hours
+          // This prevents analyzing bars after market close (e.g., after 9:30 AM)
+          const configStart = this.getConfigStartHour();
+          const configEnd = this.getConfigEndHour();
+
+          console.log(`   🕐 Market hours filter: ${configStart.toFixed(2)}-${configEnd.toFixed(2)} (${this.config.marketHours.startTime} - ${this.config.marketHours.endTime})`);
+
+          const filteredBars5m = bars5m.filter(bar => {
+            const barTime = new Date(bar.t);
+            const etHour = this.getETHour(barTime);
+            const isWithinHours = etHour >= configStart && etHour < configEnd;
+
+            // Log first few and last few bars for debugging
+            const barIndex = bars5m.indexOf(bar);
+            if (barIndex < 3 || barIndex >= bars5m.length - 3) {
+              console.log(`      Bar ${barIndex}: ${this.formatETTime(barTime)} (ET ${etHour.toFixed(2)}) - ${isWithinHours ? '✅ KEEP' : '❌ FILTER OUT'}`);
+            }
+
+            return isWithinHours;
+          });
+
+          console.log(`   📊 Found ${bars5m.length} total bars, ${filteredBars5m.length} within market hours (${configStart.toFixed(1)}-${configEnd.toFixed(1)})`);
+
+          if (filteredBars5m.length === 0) {
+            console.log(`   ⏭️  No bars within market hours for ${gapStock.symbol}`);
+            continue;
+          }
+
+          // Get the last 4 candles from filtered bars (or fewer if less than 4 are available)
+          const last4Candles = filteredBars5m.slice(-4);
+          console.log(`   📊 Analyzing last ${last4Candles.length} candles within market hours`);
 
           // Get 1-minute bars for volume calculation
           const dateString = now.toISOString().split('T')[0];
           const bars1m = await this.getHistoricalMinuteBars(gapStock.symbol, dateString);
 
-          // Calculate cumulative volume up to current time
-          const configStart = this.getConfigStartHour();
-          const configEnd = this.getConfigEndHour();
-
+          // Calculate cumulative volume up to current time (within market hours only)
           let cumulativeVolume = 0;
           for (const bar1m of bars1m) {
             const etHour = this.getETHour(new Date(bar1m.t));
@@ -1143,7 +1168,7 @@ export class GapScanner {
           // Check each of the last 4 candles for patterns
           for (let i = 0; i < last4Candles.length; i++) {
             const bar = last4Candles[i];
-            const barIndex = bars5m.indexOf(bar);
+            const barIndex = filteredBars5m.indexOf(bar);
             const timestamp = new Date(bar.t);
 
             console.log(`   🔍 Checking candle ${i + 1}/${last4Candles.length} at ${this.formatETTime(timestamp)}`);
@@ -1154,10 +1179,10 @@ export class GapScanner {
               console.log(`      📈 Updated HOD: ${currentHOD.toFixed(2)}`);
             }
 
-            // Run pattern detection
+            // Run pattern detection using filtered bars
             const patterns = [
-              this.detectToppingTail5m(gapStock.symbol, bars5m, barIndex, currentHOD, timestamp, cumulativeVolume, gapStock.gapPercent),
-              this.detectGreenRunReject(gapStock.symbol, bars5m, barIndex, currentHOD, timestamp, cumulativeVolume, gapStock.gapPercent),
+              this.detectToppingTail5m(gapStock.symbol, filteredBars5m, barIndex, currentHOD, timestamp, cumulativeVolume, gapStock.gapPercent),
+              this.detectGreenRunReject(gapStock.symbol, filteredBars5m, barIndex, currentHOD, timestamp, cumulativeVolume, gapStock.gapPercent),
             ];
 
             // Fire any detected patterns
@@ -1809,13 +1834,22 @@ export class GapScanner {
 
   // Helper methods
   private getETHour(date: Date): number {
-    // Use proper ET timezone conversion
-    const etTime = new Date(date.toLocaleString("en-US", {timeZone: "America/New_York"}));
-    const etHour = etTime.getHours() + etTime.getMinutes() / 60;
+    // Use proper ET timezone conversion with Intl.DateTimeFormat
+    const formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      hour: 'numeric',
+      minute: 'numeric',
+      hour12: false
+    });
 
-    // Debug logging for time filtering issue
-    if (etHour > 9.5 || etHour < 7) {
-      console.log(`🕐 Time conversion: ${date.toISOString()} -> ET: ${etTime.toISOString()} -> Hour: ${etHour.toFixed(2)}`);
+    const parts = formatter.formatToParts(date);
+    const hour = parseInt(parts.find(p => p.type === 'hour')?.value || '0');
+    const minute = parseInt(parts.find(p => p.type === 'minute')?.value || '0');
+    const etHour = hour + minute / 60;
+
+    // Debug logging for time filtering
+    if (etHour > 9.5 || etHour < 6) {
+      console.log(`🕐 Time conversion: ${date.toISOString()} -> ET Hour: ${etHour.toFixed(2)} (${hour}:${minute.toString().padStart(2, '0')})`);
     }
 
     return etHour;
@@ -2315,6 +2349,7 @@ export class GapScanner {
         detail: detailMessage,
         price: bar.c,
         volume: alertVolume,
+        barVolume: bar.v,  // Volume of the 5-minute bar that triggered the alert
         gapPercent: gapPercent,
         hod: hod,
         historical: true
@@ -2500,6 +2535,7 @@ export class GapScanner {
       detail: `${consecutiveGreen} green 5m candles (+${totalGainPercent.toFixed(1)}%) near HOD (${distanceFromHOD.toFixed(1)}% from HOD), red rejection at ${currentBar.c.toFixed(2)}`,
       price: currentBar.c,
       volume: alertVolume,
+      barVolume: currentBar.v,  // Volume of the 5-minute rejection bar
       gapPercent: gapPercent,
       hod: hod,
       historical: true

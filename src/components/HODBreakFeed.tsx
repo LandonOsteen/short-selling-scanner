@@ -125,14 +125,8 @@ const HODBreakFeed: React.FC<HODBreakFeedProps> = ({
 
     if (newAlerts.length > 0) {
       newAlerts.forEach(async (newAlert) => {
-        // Play sound alert immediately if enabled
-        if (soundAlertsEnabled && selectedSound !== 'none') {
-          try {
-            await soundService.playSound(selectedSound);
-          } catch (error) {
-            console.error('Sound alert failed:', error);
-          }
-        }
+        // NOTE: Sound alerts are handled in App.tsx to avoid duplicates
+        // Only voice alerts and browser notifications are handled here
 
         // Play voice alert if enabled
         if (voiceAlertsEnabled && 'speechSynthesis' in window) {
@@ -163,7 +157,7 @@ const HODBreakFeed: React.FC<HODBreakFeedProps> = ({
       prevAlertIds.current = currentIds;
     }
     prevAlertsLength.current = newAlertCount;
-  }, [filteredAlerts, voiceAlertsEnabled, soundAlertsEnabled, selectedSound]);
+  }, [filteredAlerts, voiceAlertsEnabled]); // soundAlertsEnabled and selectedSound removed - handled in App.tsx
 
   const clearFilters = useCallback(() => {
     setSymbolFilter('');
@@ -438,9 +432,15 @@ const HODBreakFeed: React.FC<HODBreakFeedProps> = ({
                   </div>
                   <div className="alert-metrics">
                     <div className="metric">
-                      <span className="metric-label">Volume:</span>
+                      <span className="metric-label">Session Vol:</span>
                       <span className="metric-value">{(alert.volume / 1000).toFixed(0)}K</span>
                     </div>
+                    {alert.barVolume !== undefined && (
+                      <div className="metric">
+                        <span className="metric-label">Bar Vol:</span>
+                        <span className="metric-value">{(alert.barVolume / 1000).toFixed(0)}K</span>
+                      </div>
+                    )}
                     {alert.hod !== undefined && (
                       <div className="metric">
                         <span className="metric-label">HOD:</span>

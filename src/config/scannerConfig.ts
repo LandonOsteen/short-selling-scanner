@@ -229,8 +229,8 @@ export interface ScannerConfig {
  */
 export const defaultScannerConfig: ScannerConfig = {
   marketHours: {
-    startTime: '04:00', // 4:00 AM ET - Full pre-market coverage
-    endTime: '20:00', // 8:00 PM ET - Extended hours coverage
+    startTime: '06:00', // 6:00 AM ET - Pre-market scanning starts
+    endTime: '09:30', // 9:30 AM ET - Market open (scanning stops at market open)
     timezone: 'America/New_York',
   },
 
@@ -238,7 +238,7 @@ export const defaultScannerConfig: ScannerConfig = {
     minGapPercentage: 10.0,
     maxGapPercentage: 10000.0,
     minPrice: 1.0,
-    maxPrice: 60.0,
+    maxPrice: 30.0,
     minCumulativeVolume: 100000,
   },
 
@@ -315,7 +315,7 @@ export const defaultScannerConfig: ScannerConfig = {
   development: {
     enableDebugLogging: true,
     overrideCurrentTime: null,
-    enableTestSignal: false, // Set to true to test scanner/alert functionality
+    enableTestSignal: true, // Set to true to test scanner/alert functionality
   },
 };
 
