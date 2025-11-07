@@ -868,8 +868,10 @@ export class GapScanner {
                                   gapStocks.length > 0;
 
     if (useWebSocketScanning) {
-      console.log(`🔌 Using WEBSOCKET mode for real-time scanning`);
+      console.log(`🔌 Using DUAL-MODE SCANNING: WebSocket (primary) + REST polling (validation)`);
       console.log(`   Symbols: ${gapStocks.length}`);
+      console.log(`   ⚡ WebSocket: Real-time alerts (0s lag)`);
+      console.log(`   🔄 REST API: Validation every 5min (catches missed bars)`);
 
       try {
         // Register alert callback with WebSocket scanner
@@ -890,9 +892,15 @@ export class GapScanner {
         await this.webSocketScanner!.connect(symbolsData);
         console.log(`✅ WebSocket scanner connected and streaming`);
 
+        // DUAL MODE: Run REST polling alongside WebSocket for validation
+        // This catches any bars WebSocket might miss and validates state
+        console.log(`🔄 Starting REST API validation polling (runs every 5 minutes)...`);
+        this.scheduleNextBackfill(); // Start REST polling in parallel
+
         // Set up periodic symbol list updates (every 2 minutes)
-        this.scanInterval = window.setInterval(async () => {
-          console.log(`\n🔄 Updating WebSocket watchlist...`);
+        // Note: This updates the watchlist for BOTH WebSocket and REST polling
+        const symbolUpdateInterval = window.setInterval(async () => {
+          console.log(`\n🔄 Updating dual-mode watchlist...`);
           const updatedStocks = await this.scanForGappers();
           const updatedData = updatedStocks.map(stock => ({
             symbol: stock.symbol,
@@ -904,9 +912,15 @@ export class GapScanner {
           await this.webSocketScanner!.updateSymbols(updatedData);
         }, 120000); // 2 minutes
 
+        // Store the interval so we can clean it up later
+        // Note: this.scanInterval is used by REST polling, so we need another variable
+        if (!(this as any).symbolUpdateInterval) {
+          (this as any).symbolUpdateInterval = symbolUpdateInterval;
+        }
+
       } catch (error) {
         console.error('❌ Failed to start WebSocket scanner:', error);
-        console.log('⚠️  Falling back to polling mode...');
+        console.log('⚠️  Falling back to REST polling only...');
         // Fall back to polling
         this.scheduleNextBackfill();
       }
@@ -1231,16 +1245,23 @@ export class GapScanner {
       console.log('   ✅ WebSocket scanner disconnected');
     }
 
-    // Clear polling interval/timeout
+    // Clear REST API polling interval/timeout
     if (this.scanInterval) {
       clearTimeout(this.scanInterval);
       clearInterval(this.scanInterval); // Also try clearing as interval in case it was set that way
       this.scanInterval = null;
-      console.log('   ✅ Cleared scheduled timeout/interval');
+      console.log('   ✅ Cleared REST polling interval');
+    }
+
+    // Clear symbol update interval (used in dual-mode)
+    if ((this as any).symbolUpdateInterval) {
+      clearInterval((this as any).symbolUpdateInterval);
+      (this as any).symbolUpdateInterval = null;
+      console.log('   ✅ Cleared symbol update interval');
     }
 
     this.isScanning = false;
-    console.log('   ✅ Gap stock scanner stopped');
+    console.log('   ✅ Gap stock scanner stopped (all modes)');
   }
 
   // Get current qualified symbols
@@ -1369,23 +1390,48 @@ export class GapScanner {
       // Get gap stocks that qualified on this date with proper filtering
       console.log(`Step 1: Finding gap stocks for ${dateString} with criteria: 20%+ gap, 500k+ volume, $1-$10 price`);
 
-      // OPTIMIZATION: If scanning TODAY during market hours, use current gap stocks instead of re-fetching
+      // CRITICAL: During pre-market, use LIVE gap stocks (from gainers endpoint)
+      // The grouped daily endpoint has NO data for today during pre-market
       const now = this.getCurrentTime();
       const etNowForDate = new Date(now.toLocaleString("en-US", {timeZone: "America/New_York"}));
       const todayDateString = `${etNowForDate.getFullYear()}-${String(etNowForDate.getMonth() + 1).padStart(2, '0')}-${String(etNowForDate.getDate()).padStart(2, '0')}`;
       const isToday = dateString === todayDateString;
       const isWithinHours = this.isWithinMarketHours(now);
+      const hasGapStocks = this.gapStocks.size > 0;
+
+      console.log(`\n${'🔍'.repeat(40)}`);
+      console.log(`🔍 REST SYMBOL DISCOVERY DEBUG:`);
+      console.log(`   dateString: ${dateString}`);
+      console.log(`   todayDateString: ${todayDateString}`);
+      console.log(`   isToday: ${isToday}`);
+      console.log(`   isWithinHours: ${isWithinHours}`);
+      console.log(`   this.gapStocks.size: ${this.gapStocks.size}`);
+      console.log(`${'🔍'.repeat(40)}\n`);
 
       let historicalGapStocks: GapStock[];
 
-      if (isToday && isWithinHours && this.gapStocks.size > 0) {
-        // Use current gap stocks list (already populated by scanForGappers)
-        historicalGapStocks = Array.from(this.gapStocks.values());
-        console.log(`✅ Using CURRENT gap stocks list (${historicalGapStocks.length} stocks) - scanning TODAY during market hours`);
+      if (isToday && isWithinHours) {
+        // TODAY + WITHIN MARKET HOURS (including pre-market 6-10 AM)
+        // NEVER use grouped daily endpoint - it has no data until 9:30 AM
+        // Always use live gainers endpoint instead
+
+        if (hasGapStocks) {
+          // Use cached gap stocks (already populated by scanForGappers)
+          historicalGapStocks = Array.from(this.gapStocks.values());
+          console.log(`✅ Using CACHED live gap stocks (${historicalGapStocks.length} stocks) from this.gapStocks`);
+        } else {
+          // Cache is empty - fetch fresh using gainers endpoint
+          console.log(`⚠️  Gap stocks cache is empty - fetching FRESH from gainers endpoint (pre-market compatible)...`);
+          historicalGapStocks = await this.scanForGappers();
+          console.log(`✅ Fetched FRESH live gap stocks (${historicalGapStocks.length} stocks) from gainers endpoint`);
+        }
       } else {
-        // Fetch historical gap stocks for past dates or when market is closed
+        // HISTORICAL SCAN or MARKET CLOSED
+        // Use grouped daily endpoint (only available for past dates or after 9:30 AM)
+        console.log(`📊 Using HISTORICAL mode - Reason: ${!isToday ? 'Scanning past date' : 'Market closed'}`);
+        console.log(`   Fetching from grouped daily endpoint...`);
         historicalGapStocks = await this.getHistoricalGapStocks(dateString);
-        console.log(`📊 Fetched HISTORICAL gap stocks (${historicalGapStocks.length} stocks) - scanning ${isToday ? 'TODAY after hours' : 'past date'}`);
+        console.log(`📊 Fetched ${historicalGapStocks.length} historical gap stocks`);
       }
 
       if (historicalGapStocks.length === 0) {

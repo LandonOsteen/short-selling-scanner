@@ -7,10 +7,15 @@
 
 export interface ScannerConfig {
   // Market Hours Configuration
+  // IMPORTANT: Signal detection is CONSISTENT throughout this window
+  // The system maintains the same HOD calculation, volume metrics, and pattern
+  // detection logic when transitioning from pre-market to regular hours (9:30 AM).
+  // This ensures signals generated at 6:00 AM work the same way as signals at 9:45 AM.
   marketHours: {
     // Scanning timeframe (24-hour format)
-    startTime: string; // "04:00" for 4:00 AM
-    endTime: string; // "09:30" for 9:30 AM
+    // Only signals that occur within this window will be detected
+    startTime: string; // "06:00" for 6:00 AM
+    endTime: string; // "10:00" for 10:00 AM
     timezone: string; // "America/New_York"
   };
 
@@ -229,8 +234,8 @@ export interface ScannerConfig {
  */
 export const defaultScannerConfig: ScannerConfig = {
   marketHours: {
-    startTime: '04:00', // 4:00 AM ET - Full pre-market coverage
-    endTime: '20:00', // 8:00 PM ET - Extended hours coverage
+    startTime: '06:00', // 6:00 AM ET - Signal detection window start
+    endTime: '10:00', // 10:00 AM ET - Signal detection window end
     timezone: 'America/New_York',
   },
 
