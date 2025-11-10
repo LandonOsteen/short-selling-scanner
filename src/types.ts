@@ -1,4 +1,4 @@
-export type PatternType = 'ToppingTail5m' | 'GreenRunReject';
+export type PatternType = 'ToppingTail5m';
 
 export interface Alert {
   id: string;

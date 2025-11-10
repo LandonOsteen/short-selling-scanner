@@ -304,13 +304,47 @@
 }
 
 /* Trade Table */
+.trades-table-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
 .trades-table h4 {
   color: var(--text-primary);
   font-size: 18px;
   font-weight: var(--font-weight-bold);
-  margin-bottom: 16px;
+  margin: 0;
   text-transform: uppercase;
   letter-spacing: 0.5px;
+}
+
+.download-csv-button {
+  background: linear-gradient(135deg, var(--accent-primary) 0%, var(--accent-secondary) 100%);
+  border: 2px solid var(--border-luxury);
+  border-radius: var(--radius-sharp);
+  color: var(--text-primary);
+  padding: 10px 20px;
+  font-family: var(--font-primary);
+  font-size: 13px;
+  font-weight: var(--font-weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.download-csv-button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  border-color: var(--accent-luxury);
+}
+
+.download-csv-button:active {
+  transform: translateY(0);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
 }
 
 .table-container {
@@ -363,6 +397,10 @@
   border-left: 4px solid var(--accent-danger);
 }
 
+.breakeven-trade {
+  border-left: 4px solid #F59E0B; /* Yellow/amber color for breakeven */
+}
+
 .symbol {
   font-weight: var(--font-weight-bold);
   text-transform: uppercase;
@@ -381,6 +419,11 @@
 
 .negative {
   color: var(--accent-danger);
+  font-weight: var(--font-weight-bold);
+}
+
+.breakeven {
+  color: #F59E0B; /* Yellow/amber color for breakeven trades */
   font-weight: var(--font-weight-bold);
 }
 
@@ -481,4 +524,195 @@
 .table-container::-webkit-scrollbar-thumb:hover {
   background: var(--accent-luxury);
   box-shadow: 0 0 8px rgba(201, 170, 150, 0.4);
+}
+
+/* Calendar View */
+.calendar-view {
+  background: linear-gradient(135deg, var(--bg-window) 0%, var(--bg-card) 100%);
+  border: 2px solid var(--border-primary);
+  border-radius: var(--radius-sharp);
+  padding: 24px;
+  margin: 0 auto 32px auto;
+  max-width: 1200px;
+}
+
+.calendar-view h3 {
+  color: var(--text-primary);
+  font-size: 18px;
+  font-weight: var(--font-weight-bold);
+  margin: 0 0 24px 0;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.calendar-months {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+  gap: 32px;
+}
+
+.calendar-month {
+  background: var(--bg-secondary);
+  border: 2px solid var(--border-primary);
+  border-radius: var(--radius-sharp);
+  padding: 20px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.calendar-month-header {
+  color: var(--text-primary);
+  font-size: 16px;
+  font-weight: var(--font-weight-bold);
+  text-align: center;
+  margin-bottom: 16px;
+  padding: 12px;
+  background: var(--bg-tertiary);
+  border: 2px solid var(--border-luxury);
+  border-radius: var(--radius-sharp);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 8px;
+  background: var(--bg-tertiary);
+  padding: 8px;
+  border-radius: var(--radius-sharp);
+}
+
+.calendar-day-header {
+  color: var(--text-accent);
+  font-size: 11px;
+  font-weight: var(--font-weight-bold);
+  text-align: center;
+  padding: 12px 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  background: var(--bg-window);
+  border: 1px solid var(--border-primary);
+  border-radius: 4px;
+}
+
+.calendar-day {
+  aspect-ratio: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  border: 2px solid var(--border-primary);
+  border-radius: 6px;
+  font-size: 15px;
+  font-weight: var(--font-weight-bold);
+  cursor: default;
+  transition: all 0.2s ease;
+  min-height: 50px;
+  background: var(--bg-window);
+}
+
+.calendar-day.empty {
+  border: none;
+  background: transparent;
+}
+
+.calendar-day.weekend {
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  opacity: 0.6;
+}
+
+.calendar-day.no-data {
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+}
+
+.calendar-day.profit {
+  background: linear-gradient(135deg, rgba(34, 197, 94, 0.25) 0%, rgba(34, 197, 94, 0.35) 100%);
+  border: 3px solid var(--accent-success);
+  color: var(--accent-success);
+  cursor: pointer;
+  font-weight: var(--font-weight-bold);
+  box-shadow: 0 0 8px rgba(34, 197, 94, 0.3);
+}
+
+.calendar-day.loss {
+  background: linear-gradient(135deg, rgba(239, 68, 68, 0.25) 0%, rgba(239, 68, 68, 0.35) 100%);
+  border: 3px solid var(--accent-danger);
+  color: var(--accent-danger);
+  cursor: pointer;
+  font-weight: var(--font-weight-bold);
+  box-shadow: 0 0 8px rgba(239, 68, 68, 0.3);
+}
+
+.calendar-day.profit:hover,
+.calendar-day.loss:hover {
+  transform: scale(1.15);
+  z-index: 10;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+}
+
+.calendar-day.profit:hover {
+  border-color: #22c55e;
+  box-shadow: 0 6px 20px rgba(34, 197, 94, 0.4);
+}
+
+.calendar-day.loss:hover {
+  border-color: #ef4444;
+  box-shadow: 0 6px 20px rgba(239, 68, 68, 0.4);
+}
+
+.calendar-day .day-number {
+  position: relative;
+  z-index: 1;
+}
+
+.day-tooltip {
+  display: none;
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  margin-top: 8px;
+  background: var(--bg-card);
+  border: 2px solid var(--border-luxury);
+  border-radius: var(--radius-sharp);
+  padding: 12px;
+  min-width: 150px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  z-index: 100;
+  pointer-events: none;
+}
+
+.calendar-day:hover .day-tooltip {
+  display: block;
+}
+
+.tooltip-date {
+  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: var(--font-weight-semibold);
+  margin-bottom: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.tooltip-trades {
+  color: var(--text-secondary);
+  font-size: 10px;
+  margin-bottom: 6px;
+}
+
+.tooltip-pnl {
+  font-size: 14px;
+  font-weight: var(--font-weight-bold);
+  font-family: var(--font-mono);
+}
+
+.tooltip-pnl.positive {
+  color: var(--accent-success);
+}
+
+.tooltip-pnl.negative {
+  color: var(--accent-danger);
 }

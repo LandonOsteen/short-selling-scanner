@@ -62,20 +62,17 @@ export class WebSocketScanner {
 
   // Pattern detection methods (copied from GapScanner)
   private detectToppingTail5m: (symbol: string, bars5m: BarData[], index: number, hod: number, timestamp: Date, cumulativeVolume?: number, gapPercent?: number) => Alert | null;
-  private detectGreenRunReject: (symbol: string, bars5m: BarData[], index: number, hod: number, timestamp: Date, cumulativeVolume?: number, gapPercent?: number) => Alert | null;
 
   constructor(
     apiKey: string,
     config: ScannerConfig,
     patternDetectors: {
       detectToppingTail5m: any;
-      detectGreenRunReject: any;
     }
   ) {
     this.apiKey = apiKey;
     this.config = config;
     this.detectToppingTail5m = patternDetectors.detectToppingTail5m;
-    this.detectGreenRunReject = patternDetectors.detectGreenRunReject;
 
     console.log('🔌 WebSocketScanner initialized');
   }
@@ -579,7 +576,6 @@ export class WebSocketScanner {
     // CRITICAL: Pass CUMULATIVE volume, not single bar volume, to match REST API
     const patterns: (Alert | null)[] = [
       this.detectToppingTail5m.call(this, symbol, barsWithProperties as any, index, state.hod, timestamp, state.cumulativeVolume, state.gapPercent),
-      this.detectGreenRunReject.call(this, symbol, barsWithProperties as any, index, state.hod, timestamp, state.cumulativeVolume, state.gapPercent),
     ];
 
     patterns.forEach(alert => {

@@ -19,7 +19,6 @@ interface HistoricalResults {
 
 const PATTERN_CONFIGS: Partial<Record<PatternType, { title: string; color: string; priority: number }>> = {
   'ToppingTail5m': { title: '5-Minute Topping Tail', color: '#dc3545', priority: 1 },
-  'GreenRunReject': { title: 'Green Run Rejection', color: '#28a745', priority: 1 },
 };
 
 const HistoricalTesting: React.FC<HistoricalTestingProps> = ({ gapScanner }) => {
@@ -98,14 +97,13 @@ const HistoricalTesting: React.FC<HistoricalTestingProps> = ({ gapScanner }) => 
       // Calculate pattern breakdown (only for 5-minute patterns)
       const patternBreakdown: Partial<Record<PatternType, number>> = {
         'ToppingTail5m': 0,
-        'GreenRunReject': 0,
       };
 
       const uniqueSymbols = new Set<string>();
 
       // Filter to only include 5-minute patterns we care about
       const filteredHistoricalAlerts = historicalAlerts.filter(
-        alert => alert.type === 'ToppingTail5m' || alert.type === 'GreenRunReject'
+        alert => alert.type === 'ToppingTail5m'
       );
 
       filteredHistoricalAlerts.forEach(alert => {
@@ -190,12 +188,6 @@ const HistoricalTesting: React.FC<HistoricalTestingProps> = ({ gapScanner }) => 
           </span>
           <span className="config-item">
             <span className="config-label">5m TT HOD:</span> {config.patterns.toppingTail5m.requireStrictHODBreak ? 'Strict Break' : `${config.patterns.toppingTail5m.maxHighDistanceFromHODPercent}% max`}
-          </span>
-          <span className="config-item">
-            <span className="config-label">Green Run:</span> {config.patterns.greenRun.minConsecutiveGreen}+ candles
-          </span>
-          <span className="config-item">
-            <span className="config-label">HOD Distance:</span> {config.patterns.greenRun.maxDistanceFromHODPercent}% max
           </span>
         </div>
       </div>

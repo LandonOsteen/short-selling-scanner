@@ -23,7 +23,7 @@ function App() {
   });
   const [layoutMode, setLayoutMode] = useState<'hodbreak' | 'historical' | 'backtest'>('hodbreak');
   const [voiceAlertsEnabled, setVoiceAlertsEnabled] = useState(false);
-  const [soundAlertsEnabled, setSoundAlertsEnabled] = useState(false);
+  const [soundAlertsEnabled, setSoundAlertsEnabled] = useState(true);
   const [selectedSound, setSelectedSound] = useState('alert');
 
   // Enable/disable sound service when sound alerts toggle

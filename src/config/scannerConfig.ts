@@ -113,25 +113,6 @@ export interface ScannerConfig {
       // 6. Optionally be red (if mustCloseRed = true)
     };
 
-    // Green candle run patterns (5-minute)
-    greenRun: {
-      // Minimum consecutive green candles before red
-      minConsecutiveGreen: number; // 4
-
-      // Maximum consecutive green candles to avoid over-extended moves
-      maxConsecutiveGreen: number; // 20
-
-      // Minimum total percentage gain during green run
-      minRunGainPercent: number; // 1.0 = 1%
-
-      // Must close red after green run
-      mustCloseRed: boolean; // true
-
-      // Maximum distance from HOD for green run high (in percentage)
-      // HOD includes pre-market and previous day post-market trading
-      maxDistanceFromHODPercent: number; // 3.0 = within 3% of HOD
-    };
-
     // EMA(200 Daily) Tap-and-Reject pattern
     ema200TapReject: {
       // Maximum distance from EMA200 to consider a "tap" (in percentage)
@@ -207,6 +188,11 @@ export interface ScannerConfig {
     // Number of symbols to analyze in historical scan
     maxSymbolsToAnalyze: number; // 20
 
+    // Minimum daily volume threshold for historical candidate filtering
+    // This filters stocks in Stage 1 BEFORE expensive minute-candle analysis
+    // Set higher (e.g., 800000) to reduce candidates and speed up backtesting
+    minDailyVolume: number; // 800000 = 800K shares
+
     // Minimum average volume threshold for symbol discovery (no longer used - discovery based on gap % only)
     minVolumeForDiscovery: number; // 25000 (deprecated, kept for compatibility)
   };
@@ -261,22 +247,14 @@ export const defaultScannerConfig: ScannerConfig = {
     },
 
     toppingTail5m: {
-      minClosePercent: 40.0, // 60% down the candle
+      minClosePercent: 0.0, // 60% down the candle
       mustCloseRed: false,
       minBarVolume: 5000,
       maxBarVolume: 50000000, // 50M shares max to filter data errors
-      minShadowToBodyRatio: 0.5, // Upper shadow must be at least 0.5x the body
+      minShadowToBodyRatio: 1.5, // Upper shadow must be at least 0.5x the body
       requireStrictHODBreak: true, // Strict mode: high must break HOD
       maxHighDistanceFromHODPercent: 15.0, // High can be within 20% of HOD (only in loose mode)
       maxCloseDistanceFromHODPercent: 20.0, // Close must be within 15% of HOD
-    },
-
-    greenRun: {
-      minConsecutiveGreen: 4,
-      maxConsecutiveGreen: 20,
-      minRunGainPercent: 1.0,
-      mustCloseRed: true,
-      maxDistanceFromHODPercent: 3.0, // Only trigger near HOD (within 3%)
     },
 
     ema200TapReject: {
@@ -314,6 +292,7 @@ export const defaultScannerConfig: ScannerConfig = {
   historical: {
     maxLookbackDays: 730,
     maxSymbolsToAnalyze: 100, // Increased from 20 to 100 to capture more symbols
+    minDailyVolume: 2000000, // 2M daily volume minimum (end-of-day total) - filters low-activity stocks for backtesting
     minVolumeForDiscovery: 25000, // Reduced from 50000 to 25000 for more discovery
   },
 
