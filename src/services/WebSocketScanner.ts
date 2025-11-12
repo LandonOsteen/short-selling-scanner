@@ -202,9 +202,10 @@ export class WebSocketScanner {
     // Get previous trading day for after-hours data
     const previousDate = this.getPreviousTradingDay(dateString);
 
-    console.log(`   Fetching 1-minute bars from market start (${this.config.marketHours.startTime} ET) to now`);
-    console.log(`   Date: ${dateString}, Start time: ${marketStartET.toLocaleTimeString()}`);
-    console.log(`   Also fetching previous day after-hours data: ${previousDate}`);
+    // Verbose time logging removed for cleaner console
+    // console.log(`   Fetching 1-minute bars from market start (${this.config.marketHours.startTime} ET) to now`);
+    // console.log(`   Date: ${dateString}, Start time: ${marketStartET.toLocaleTimeString()}`);
+    // console.log(`   Also fetching previous day after-hours data: ${previousDate}`);
 
     for (const symbol of symbols) {
       try {
@@ -255,9 +256,10 @@ export class WebSocketScanner {
         // CRITICAL: This must match REST API behavior
         symbolState.cumulativeVolume = recentBars.reduce((sum: number, bar: MinuteCandle) => sum + bar.volume, 0);
 
-        console.log(`   ✅ ${symbol}: Loaded ${recentBars.length} 1-minute candles from ${this.config.marketHours.startTime} ET`);
-        console.log(`      📈 HOD Calculation: Prev day after-hours=$${afterHoursHigh.toFixed(2)}, Today max=$${todayMaxHigh.toFixed(2)} (from ALL ${allBarsForHOD.length} bars), TRUE HOD=$${symbolState.hod.toFixed(2)}`);
-        console.log(`      📊 Cumulative Volume: ${(symbolState.cumulativeVolume/1000).toFixed(1)}K (from bars >= ${this.config.marketHours.startTime})`);
+        // Verbose logging removed for cleaner console
+        // console.log(`   ✅ ${symbol}: Loaded ${recentBars.length} 1-minute candles from ${this.config.marketHours.startTime} ET`);
+        // console.log(`      📈 HOD Calculation: Prev day after-hours=$${afterHoursHigh.toFixed(2)}, Today max=$${todayMaxHigh.toFixed(2)} (from ALL ${allBarsForHOD.length} bars), TRUE HOD=$${symbolState.hod.toFixed(2)}`);
+        // console.log(`      📊 Cumulative Volume: ${(symbolState.cumulativeVolume/1000).toFixed(1)}K (from bars >= ${this.config.marketHours.startTime})`);
 
         // Check if we can build a 5-minute candle immediately
         this.checkAndProcess5MinCandle(symbol, symbolState);
@@ -410,7 +412,8 @@ export class WebSocketScanner {
       symbolState.minuteCandles.shift();
     }
 
-    console.log(`📊 ${agg.sym} 1m candle: ${this.formatETTime(new Date(agg.s))} | O:${agg.o.toFixed(2)} H:${agg.h.toFixed(2)} L:${agg.l.toFixed(2)} C:${agg.c.toFixed(2)} V:${agg.v}`);
+    // Verbose 1-minute candle logging removed for cleaner console
+    // console.log(`📊 ${agg.sym} 1m candle: ${this.formatETTime(new Date(agg.s))} | O:${agg.o.toFixed(2)} H:${agg.h.toFixed(2)} L:${agg.l.toFixed(2)} C:${agg.c.toFixed(2)} V:${agg.v}`);
 
     // Check if this completes a 5-minute candle
     this.checkAndProcess5MinCandle(agg.sym, symbolState);
@@ -543,13 +546,16 @@ export class WebSocketScanner {
       return;
     }
 
-    // FILTER 2: Check cumulative volume meets minimum requirement (match REST behavior)
+    // VOLUME FILTER REMOVED: Allow all patterns through regardless of volume
+    // This ensures signals fire immediately when pattern is detected
+    // Volume requirement can be re-enabled by uncommenting the code below:
+    /*
     if (state.cumulativeVolume < this.config.gapCriteria.minCumulativeVolume) {
       console.log(`   🚫 VOLUME FILTER: ${symbol} at ${this.formatETTime(timestamp)} - cumulative volume ${(state.cumulativeVolume/1000).toFixed(1)}K < ${(this.config.gapCriteria.minCumulativeVolume/1000).toFixed(0)}K required - SKIPPING SIGNAL`);
       return;
-    } else {
-      console.log(`   ✅ VOLUME PASSED: ${symbol} at ${this.formatETTime(timestamp)} - cumulative volume ${(state.cumulativeVolume/1000).toFixed(1)}K >= ${(this.config.gapCriteria.minCumulativeVolume/1000).toFixed(0)}K required`);
     }
+    */
+    console.log(`   📊 VOLUME INFO: ${symbol} at ${this.formatETTime(timestamp)} - cumulative volume ${(state.cumulativeVolume/1000).toFixed(1)}K (filter disabled)`);
 
     // CRITICAL FIX: Fetch native 5-minute bars from REST API for reliable history
     // This ensures we have complete historical context even if 1-minute bars have gaps

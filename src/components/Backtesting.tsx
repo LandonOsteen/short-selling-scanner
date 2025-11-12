@@ -200,15 +200,24 @@ const Backtesting: React.FC<BacktestingProps> = ({ gapScanner }) => {
   }, [startDate, endDate]);
 
   const getBusinessDays = useCallback((start: string, end: string): string[] => {
-    const startDate = new Date(start);
-    const endDate = new Date(end);
+    // Fix timezone issue: Parse date string manually to avoid UTC conversion
+    const parseDate = (dateStr: string) => {
+      const [year, month, day] = dateStr.split('-').map(Number);
+      return new Date(year, month - 1, day); // month is 0-indexed
+    };
+
+    const startDate = parseDate(start);
+    const endDate = parseDate(end);
     const businessDays: string[] = [];
 
     const currentDate = new Date(startDate);
     while (currentDate <= endDate) {
       const dayOfWeek = currentDate.getDay();
       if (dayOfWeek !== 0 && dayOfWeek !== 6) { // Not Sunday or Saturday
-        businessDays.push(currentDate.toISOString().split('T')[0]);
+        const year = currentDate.getFullYear();
+        const month = String(currentDate.getMonth() + 1).padStart(2, '0');
+        const day = String(currentDate.getDate()).padStart(2, '0');
+        businessDays.push(`${year}-${month}-${day}`);
       }
       currentDate.setDate(currentDate.getDate() + 1);
     }
@@ -231,7 +240,7 @@ const Backtesting: React.FC<BacktestingProps> = ({ gapScanner }) => {
       console.log(`Starting backtest: ${strategy} from ${startDate} to ${endDate}`);
 
       const businessDays = getBusinessDays(startDate, endDate);
-      console.log(`Testing ${businessDays.length} business days`);
+      console.log(`Testing ${businessDays.length} business days: ${businessDays.join(', ')}`);
 
       // OPTIMIZATION 1: Pre-fetch ALL grouped daily data upfront
       console.log(`⚡ Pre-fetching grouped daily data for all dates...`);
@@ -306,6 +315,9 @@ const Backtesting: React.FC<BacktestingProps> = ({ gapScanner }) => {
             // Get all alerts for this date
             const dayAlerts = await gapScanner.getHistoricalAlertsForDate(date);
 
+            console.log(`\n🔍 BACKTEST FILTER PIPELINE for ${date}:`);
+            console.log(`   Step 1 - Raw alerts from scanner: ${dayAlerts.length}`);
+
             // Fetch current date's data (should be cached from pre-fetch)
             const currentDateData = await fetchDailyData(date);
 
@@ -313,22 +325,37 @@ const Backtesting: React.FC<BacktestingProps> = ({ gapScanner }) => {
             let volumeFilteredAlerts = dayAlerts;
             if (minDailyVolume > 0 && currentDateData.size > 0) {
               const beforeVolumeFilter = volumeFilteredAlerts.length;
+              const filteredOutSymbols: string[] = [];
               volumeFilteredAlerts = dayAlerts.filter(alert => {
                 const bar = currentDateData.get(alert.symbol);
                 const dailyVolume = bar?.v || 0;
-                return dailyVolume >= minDailyVolume;
+                const passes = dailyVolume >= minDailyVolume;
+                if (!passes) {
+                  filteredOutSymbols.push(`${alert.symbol}(${(dailyVolume/1000).toFixed(0)}K)`);
+                }
+                return passes;
               });
 
               const filteredCount = beforeVolumeFilter - volumeFilteredAlerts.length;
               if (filteredCount > 0) {
-                console.log(`   📊 ${date}: Filtered ${filteredCount} low-volume signals (< ${(minDailyVolume/1000).toFixed(0)}K daily volume)`);
+                console.log(`   Step 2 - Volume filter: ${filteredCount} removed (< ${(minDailyVolume/1000).toFixed(0)}K daily volume)`);
+                console.log(`      Removed: ${filteredOutSymbols.join(', ')}`);
+              } else {
+                console.log(`   Step 2 - Volume filter: All ${volumeFilteredAlerts.length} signals passed`);
               }
             }
 
             // Filter by strategy if not 'all'
+            const beforeStrategyFilter = volumeFilteredAlerts.length;
             let filteredAlerts = strategy === 'all'
               ? volumeFilteredAlerts
               : volumeFilteredAlerts.filter(alert => alert.type === strategy);
+
+            if (strategy !== 'all') {
+              console.log(`   Step 3 - Strategy filter (${strategy}): ${beforeStrategyFilter - filteredAlerts.length} removed, ${filteredAlerts.length} remain`);
+            } else {
+              console.log(`   Step 3 - Strategy filter: Skipped (all strategies)`);
+            }
 
             // Additional filter: Only include signals from CUSTOM entry time range
             const [entryStartHour, entryStartMin] = entryStartTime.split(':').map(Number);
@@ -336,12 +363,15 @@ const Backtesting: React.FC<BacktestingProps> = ({ gapScanner }) => {
             const entryStart = entryStartHour + entryStartMin / 60;
             const entryEnd = entryEndHour + entryEndMin / 60;
 
+            const beforeTimeFilter = filteredAlerts.length;
             filteredAlerts = filteredAlerts.filter(alert => {
               const alertTime = new Date(alert.timestamp);
               const etTime = new Date(alertTime.toLocaleString("en-US", {timeZone: "America/New_York"}));
               const etHour = etTime.getHours() + etTime.getMinutes() / 60;
               return etHour >= entryStart && etHour < entryEnd;
             });
+
+            console.log(`   Step 4 - Time window filter (${entryStartTime}-${entryEndTime}): ${beforeTimeFilter - filteredAlerts.length} removed, ${filteredAlerts.length} remain`);
 
             // For market open exit: group by symbol and get first signal per symbol
             let signalsToProcess: Alert[] = [];
@@ -355,9 +385,18 @@ const Backtesting: React.FC<BacktestingProps> = ({ gapScanner }) => {
                   }
                 });
               signalsToProcess = Array.from(firstSignalsPerSymbol.values());
+              const dedupeCount = filteredAlerts.length - signalsToProcess.length;
+              if (dedupeCount > 0) {
+                console.log(`   Step 5 - Symbol deduplication: ${dedupeCount} duplicate signals removed, ${signalsToProcess.length} remain`);
+              } else {
+                console.log(`   Step 5 - Symbol deduplication: No duplicates`);
+              }
             } else {
               signalsToProcess = filteredAlerts.sort((a, b) => a.timestamp - b.timestamp);
+              console.log(`   Step 5 - Symbol deduplication: Skipped (not using marketOpen exit)`);
             }
+
+            console.log(`   ✅ Final signals to process: ${signalsToProcess.length}\n`);
 
             // Process each signal and collect trades for this date
             const dateTrades: Trade[] = [];

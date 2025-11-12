@@ -13,6 +13,11 @@ export interface GapStock {
   hod: number;
   lastUpdated: number;
   ema200?: number; // Daily 200 EMA - calculated once per day
+  // Early gainer detection fields
+  peakTime?: Date; // When the peak gap occurred
+  openPrice?: number; // Price at market open (9:30 AM)
+  fadePercent?: number; // How much it faded from peak to open
+  isEarlyPeak?: boolean; // Whether peak occurred in early window (e.g., before 8:30 AM)
 }
 
 export interface PolygonBar {
@@ -270,9 +275,10 @@ export class GapScanner {
       const now = this.getCurrentTime();
       const etHour = this.getETHour(now);
 
-      if (this.config.development.enableDebugLogging) {
-        console.log(`Scanning for gappers at ET time: ${this.formatETTime(now)} (${etHour.toFixed(2)})`);
-      }
+      // Verbose time logging disabled for cleaner console
+      // if (this.config.development.enableDebugLogging) {
+      //   console.log(`Scanning for gappers at ET time: ${this.formatETTime(now)} (${etHour.toFixed(2)})`);
+      // }
 
       // Always fetch real gap stocks from API when available
       // This ensures consistent data regardless of login time
@@ -332,13 +338,14 @@ export class GapScanner {
     }
 
     try {
-      console.log(`\n========== SCANNER MODE SELECTION ==========`);
-      console.log(`Current ET Time: ${this.formatETTime(now)} (Hour: ${etHour.toFixed(2)})`);
-      console.log(`Config: ${this.config.gapCriteria.minGapPercentage}%+ gap, ${(this.config.gapCriteria.minCumulativeVolume/1000).toFixed(0)}K+ volume, $${this.config.gapCriteria.minPrice}-${this.config.gapCriteria.maxPrice} price`);
-      console.log(`Market Hours: ${this.config.marketHours.startTime} - ${this.config.marketHours.endTime} ET`);
+      // Verbose logging removed for cleaner console
+      // console.log(`\n========== SCANNER MODE SELECTION ==========`);
+      // console.log(`Current ET Time: ${this.formatETTime(now)} (Hour: ${etHour.toFixed(2)})`);
+      // console.log(`Config: ${this.config.gapCriteria.minGapPercentage}%+ gap, ${(this.config.gapCriteria.minCumulativeVolume/1000).toFixed(0)}K+ volume, $${this.config.gapCriteria.minPrice}-${this.config.gapCriteria.maxPrice} price`);
+      // console.log(`Market Hours: ${this.config.marketHours.startTime} - ${this.config.marketHours.endTime} ET`);
 
       const withinMarketHours = this.isWithinMarketHours(now);
-      console.log(`Within Market Hours Check: ${withinMarketHours}`);
+      // console.log(`Within Market Hours Check: ${withinMarketHours}`);
       console.log(`ET Hour >= 9.5 (9:30 AM)?: ${etHour >= 9.5}`);
 
       // Use live premarket analysis before 9:30 AM with minute bar volume
@@ -471,7 +478,8 @@ export class GapScanner {
       // Use current time if we're still in premarket, otherwise use market open
       const endTime = now < marketOpen ? now : marketOpen;
 
-      console.log(`Calculating premarket volume for ${symbol} from ${this.formatETTime(marketStart)} to ${this.formatETTime(endTime)}`);
+      // Verbose time logging removed
+      // console.log(`Calculating premarket volume for ${symbol} from ${this.formatETTime(marketStart)} to ${this.formatETTime(endTime)}`);
 
       // Get minute bars for the premarket period
       const bars = await this.getHistoricalBars(symbol, marketStart, endTime);
@@ -515,7 +523,8 @@ export class GapScanner {
       // Use current time if we're still in premarket, otherwise use market open
       const endTime = now < marketOpen ? now : marketOpen;
 
-      console.log(`Calculating premarket volume and HOD for ${symbol} from ${this.formatETTime(marketStart)} to ${this.formatETTime(endTime)}`);
+      // Verbose time logging removed
+      // console.log(`Calculating premarket volume and HOD for ${symbol} from ${this.formatETTime(marketStart)} to ${this.formatETTime(endTime)}`);
 
       // STEP 1: Get previous day after-hours high (4-8 PM) - CRITICAL for accurate HOD
       const previousDate = this.getPreviousTradingDay(date);
@@ -567,7 +576,14 @@ export class GapScanner {
     symbol: string,
     date: string,
     previousClose: number
-  ): Promise<{ peakGapPercent: number; peakPrice: number; peakTime: Date | null }> {
+  ): Promise<{
+    peakGapPercent: number;
+    peakPrice: number;
+    peakTime: Date | null;
+    openPrice: number; // Price at market open (9:30 AM)
+    fadePercent: number; // How much it faded from peak to open
+    isEarlyPeak: boolean; // Whether peak occurred in early window
+  }> {
     try {
       // Get market start time for this historical date
       const dateObj = new Date(date + 'T00:00:00');
@@ -577,19 +593,36 @@ export class GapScanner {
       const marketEnd = new Date(dateObj);
       marketEnd.setHours(10, 0, 0, 0); // 10:00 AM ET - optimized window end
 
+      // Market open time for fade calculation
+      const marketOpen = new Date(dateObj);
+      marketOpen.setHours(9, 30, 0, 0); // 9:30 AM ET
+
+      // Early peak window end (configurable, default 8:30 AM)
+      const earlyWindowEnd = new Date(dateObj);
+      const [earlyHour, earlyMin] = this.config.historical.earlyGainerDetection.earlyPeakWindowEnd.split(':').map(Number);
+      earlyWindowEnd.setHours(earlyHour, earlyMin, 0, 0);
+
       // Fetch 5-minute bars for relevant trading window (6:30 AM - 10:00 AM ET)
       // Using 5-minute bars is 5x more efficient than 1-minute and matches live scanner behavior
       const bars = await this.get5MinuteBars(symbol, marketStart, marketEnd);
 
       if (bars.length === 0) {
         console.log(`   ${symbol}: No bars found`);
-        return { peakGapPercent: 0, peakPrice: previousClose, peakTime: null };
+        return {
+          peakGapPercent: 0,
+          peakPrice: previousClose,
+          peakTime: null,
+          openPrice: previousClose,
+          fadePercent: 0,
+          isEarlyPeak: false
+        };
       }
 
       // Calculate gap percentage for each 5-minute bar and find the maximum
       let peakGapPercent = -Infinity;
       let peakPrice = previousClose;
       let peakTime: Date | null = null;
+      let openPrice = previousClose;
 
       bars.forEach(bar => {
         // Gap % based on the high of each 5-minute bar vs previous close
@@ -600,17 +633,43 @@ export class GapScanner {
           peakPrice = bar.h;
           peakTime = new Date(bar.t);
         }
+
+        // Capture price at market open (closest bar to 9:30 AM)
+        const barTime = new Date(bar.t);
+        if (barTime >= marketOpen && openPrice === previousClose) {
+          openPrice = bar.o; // Use opening price of the 9:30 AM bar
+        }
       });
 
-      if (peakTime) {
-        console.log(`   ${symbol}: Peak gap = ${peakGapPercent.toFixed(1)}% at ${this.formatETTime(peakTime)} (price: $${peakPrice.toFixed(2)})`);
+      // If no bar at market open, use the last available price
+      if (openPrice === previousClose && bars.length > 0) {
+        openPrice = bars[bars.length - 1].c; // Last close in premarket
       }
 
-      return { peakGapPercent, peakPrice, peakTime };
+      // Calculate fade percentage from peak to market open
+      const fadePercent = peakPrice > 0 ? ((peakPrice - openPrice) / peakPrice) * 100 : 0;
+
+      // Determine if peak occurred in early window
+      const isEarlyPeak = peakTime ? peakTime <= earlyWindowEnd : false;
+
+      if (peakTime) {
+        const earlyTag = isEarlyPeak ? '🌅 EARLY PEAK' : '';
+        const fadeTag = fadePercent > 40 ? `📉 FADED ${fadePercent.toFixed(1)}%` : '';
+        console.log(`   ${symbol}: Peak gap = ${peakGapPercent.toFixed(1)}% at ${this.formatETTime(peakTime)} (price: $${peakPrice.toFixed(2)}) ${earlyTag} ${fadeTag}`);
+      }
+
+      return { peakGapPercent, peakPrice, peakTime, openPrice, fadePercent, isEarlyPeak };
 
     } catch (error) {
       console.error(`Error calculating peak gap for ${symbol}:`, error);
-      return { peakGapPercent: 0, peakPrice: previousClose, peakTime: null };
+      return {
+        peakGapPercent: 0,
+        peakPrice: previousClose,
+        peakTime: null,
+        openPrice: previousClose,
+        fadePercent: 0,
+        isEarlyPeak: false
+      };
     }
   }
 
@@ -781,14 +840,15 @@ export class GapScanner {
     const startTime = this.getMarketStartTime();
     const marketEnd = this.getMarketEndTime();
 
-    if (this.config.development.enableDebugLogging) {
-      console.log('=== ENHANCED BACKFILL DEBUG ===');
-      console.log('Current time:', this.formatETTime(now));
-      console.log(`${this.config.marketHours.startTime} ET:`, this.formatETTime(startTime));
-      console.log(`${this.config.marketHours.endTime} ET:`, this.formatETTime(marketEnd));
-      console.log('API Key available:', !!this.polygonApiKey);
-      console.log('Extended Hours Support:', this.config.marketHours.endTime === '16:00' ? '✅' : '❌');
-    }
+    // Verbose backfill debug logging removed for cleaner console
+    // if (this.config.development.enableDebugLogging) {
+    //   console.log('=== ENHANCED BACKFILL DEBUG ===');
+    //   console.log('Current time:', this.formatETTime(now));
+    //   console.log(`${this.config.marketHours.startTime} ET:`, this.formatETTime(startTime));
+    //   console.log(`${this.config.marketHours.endTime} ET:`, this.formatETTime(marketEnd));
+    //   console.log('API Key available:', !!this.polygonApiKey);
+    //   console.log('Extended Hours Support:', this.config.marketHours.endTime === '16:00' ? '✅' : '❌');
+    // }
 
     // Determine current ET time for session analysis
     const etHour = this.getETHour(now);
@@ -810,17 +870,19 @@ export class GapScanner {
       endTime = Math.max(now.getTime(), startTime.getTime());
       backfillReason = 'Before market hours (clamped to start time)';
 
-      if (this.config.development.enableDebugLogging) {
-        console.log(`🕐 Before market hours - clamping backfill window to ${this.formatETTime(new Date(endTime))}`);
-      }
+      // Verbose time logging removed
+      // if (this.config.development.enableDebugLogging) {
+      //   console.log(`🕐 Before market hours - clamping backfill window to ${this.formatETTime(new Date(endTime))}`);
+      // }
     } else if (this.isWithinMarketHours(now)) {
       // During configured market hours: backfill from start time to current time
       endTime = now.getTime();
       backfillReason = `Market session active (${isPremarket ? 'premarket' : isRegularHours ? 'regular' : 'extended'})`;
 
-      if (this.config.development.enableDebugLogging) {
-        console.log(`🔴 LIVE BACKFILL: ${backfillReason} - backfilling from ${this.config.marketHours.startTime} to current time`);
-      }
+      // Verbose time logging removed
+      // if (this.config.development.enableDebugLogging) {
+      //   console.log(`🔴 LIVE BACKFILL: ${backfillReason} - backfilling from ${this.config.marketHours.startTime} to current time`);
+      // }
     } else {
       // After market hours: Apply dynamic capping logic
       // If current time is after 9:25 AM ET, cap the end time at 9:25 AM ET
@@ -828,10 +890,11 @@ export class GapScanner {
       endTime = Math.min(marketEnd.getTime(), capTime.getTime());
       backfillReason = `Market closed - capped session (${this.config.marketHours.startTime} - ${this.formatETTime(new Date(endTime))})`;
 
-      if (this.config.development.enableDebugLogging) {
-        console.log(`⏹️ COMPLETE BACKFILL: ${backfillReason}`);
-        console.log(`🔒 Dynamic capping: Original end=${this.formatETTime(marketEnd)}, Capped end=${this.formatETTime(new Date(endTime))}`);
-      }
+      // Verbose time logging removed
+      // if (this.config.development.enableDebugLogging) {
+      //   console.log(`⏹️ COMPLETE BACKFILL: ${backfillReason}`);
+      //   console.log(`🔒 Dynamic capping: Original end=${this.formatETTime(marketEnd)}, Capped end=${this.formatETTime(new Date(endTime))}`);
+      // }
     }
 
     const backfillStartTime = this.formatETTime(startTime);
@@ -1561,10 +1624,28 @@ export class GapScanner {
         });
       }
 
+      // Diagnostic logging for Monday issues
+      const dateObj = new Date(date + 'T00:00:00');
+      const dayOfWeek = dateObj.getDay(); // 0=Sunday, 1=Monday, ..., 6=Saturday
+      const dayName = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][dayOfWeek];
+
+      console.log(`\n📅 BACKTEST DATE INFO:`);
+      console.log(`   Date: ${date} (${dayName})`);
+      console.log(`   Previous Trading Day: ${previousDate}`);
+      console.log(`   Symbols trading on ${date}: ${groupedData.results.length}`);
+      console.log(`   Symbols with previous close data: ${prevCloses.size}`);
+
+      if (dayOfWeek === 1) {
+        console.log(`   🔍 MONDAY DETECTED: Using Friday close for gap calculation`);
+      }
+
       // STAGE 1: Create candidate list based on volume and price criteria
       // This reduces the number of symbols we need to fetch minute-level data for
       const candidates: Array<{ symbol: string; previousClose: number; dailyVolume: number; dailyHigh: number; openPrice: number }> = [];
       const edgeCaseChecks: Array<{ symbol: string; previousClose: number; dailyVolume: number; dailyHigh: number; openPrice: number }> = [];
+      let noPreviousCloseCount = 0;
+      let volumeFilteredCount = 0;
+      let priceFilteredCount = 0;
 
       for (const bar of groupedData.results) {
         if (!bar.T || !bar.o || !bar.v) continue; // Skip invalid data
@@ -1572,7 +1653,10 @@ export class GapScanner {
         const symbol = bar.T;
         const previousClose = prevCloses.get(symbol);
 
-        if (!previousClose) continue;
+        if (!previousClose) {
+          noPreviousCloseCount++;
+          continue;
+        }
 
         // Stage 1 filters: price range and volume (NOT gap % - we'll check that in stage 2)
         const openPrice = bar.o;
@@ -1580,6 +1664,7 @@ export class GapScanner {
 
         // Volume filter (applies to all)
         if (dailyVolume < this.config.gapCriteria.minCumulativeVolume) {
+          volumeFilteredCount++;
           continue;
         }
 
@@ -1607,11 +1692,19 @@ export class GapScanner {
             dailyHigh: bar.h,
             openPrice
           });
+        } else {
+          priceFilteredCount++;
         }
         // If openPrice < $0.60, skip entirely
       }
 
-      console.log(`✅ Stage 1 complete: ${candidates.length} candidates pass standard filters`);
+      console.log(`\n📊 STAGE 1 FILTER SUMMARY:`);
+      console.log(`   Total symbols on ${date}: ${groupedData.results.length}`);
+      console.log(`   ❌ No previous close data: ${noPreviousCloseCount}`);
+      console.log(`   ❌ Volume filtered (<${(this.config.gapCriteria.minCumulativeVolume/1000).toFixed(0)}K): ${volumeFilteredCount}`);
+      console.log(`   ❌ Price filtered: ${priceFilteredCount}`);
+      console.log(`   ✅ Standard candidates: ${candidates.length}`);
+      console.log(`   ⚠️  Edge case checks ($0.60-$1.00): ${edgeCaseChecks.length}`);
 
       // STAGE 1B: Check peak price for edge cases ($0.60-$1.00 at open)
       if (edgeCaseChecks.length > 0) {
@@ -1677,7 +1770,7 @@ export class GapScanner {
         console.log(`\n📦 Processing batch ${Math.floor(batchStart / BATCH_SIZE) + 1}: symbols ${batchStart + 1}-${batchEnd} of ${topCandidates.length}`);
 
         // Process batch in parallel
-        const batchPromises = batch.map(async (candidate, idx) => {
+        const batchPromises = batch.map(async (candidate, idx): Promise<GapStock | null> => {
           const overallIdx = batchStart + idx + 1;
 
           try {
@@ -1701,6 +1794,11 @@ export class GapScanner {
                 cumulativeVolume: 0, // Will be calculated during intraday analysis
                 hod: candidate.dailyHigh,
                 lastUpdated: Date.now(),
+                // Early gainer detection fields
+                peakTime: peakData.peakTime || undefined,
+                openPrice: peakData.openPrice,
+                fadePercent: peakData.fadePercent,
+                isEarlyPeak: peakData.isEarlyPeak,
               };
             } else {
               console.log(`   [${overallIdx}/${topCandidates.length}] ❌ ${candidate.symbol}: Peak gap ${peakData.peakGapPercent.toFixed(1)}% (below ${this.config.gapCriteria.minGapPercentage}%)`);
@@ -1723,6 +1821,87 @@ export class GapScanner {
       }
 
       console.log(`\n✅ Stage 2 complete: ${qualifyingStocks.length} stocks met peak gap criteria`);
+
+      // STAGE 2B: Early Gainer Fader Detection (if enabled)
+      // Captures stocks that were top gainers early (7-8 AM) but faded by market open
+      if (this.config.historical.earlyGainerDetection.enabled) {
+        console.log(`\n🌅 STAGE 2B: Detecting early gainer faders...`);
+        const faderConfig = this.config.historical.earlyGainerDetection;
+
+        // Build set of symbols already found
+        const existingSymbols = new Set(qualifyingStocks.map(s => s.symbol));
+
+        // Find candidates with lower volume threshold (faders often have lower EOD volume)
+        const faderCandidates = candidates.filter(c =>
+          !existingSymbols.has(c.symbol) && // Not already found
+          c.dailyVolume >= faderConfig.minDailyVolumeForFaders // Lower volume threshold
+        ).slice(0, faderConfig.maxAdditionalFaders * 2); // Check 2x to account for filtering
+
+        if (faderCandidates.length > 0) {
+          console.log(`   Checking ${faderCandidates.length} additional candidates for early peak + fade pattern...`);
+
+          const faderStocks: GapStock[] = [];
+
+          // Process fader candidates in parallel
+          const faderPromises = faderCandidates.map(async (candidate): Promise<GapStock | null> => {
+            try {
+              const peakData = await this.getPremarketPeakGapPercent(
+                candidate.symbol,
+                dateString,
+                candidate.previousClose
+              );
+
+              // Check fader criteria:
+              // 1. High early peak gap (≥ minEarlyPeakGap)
+              // 2. Peak occurred in early window (before earlyPeakWindowEnd)
+              // 3. Significant fade from peak (≥ minFadePercent)
+              const isQualifiedFader =
+                peakData.peakGapPercent >= faderConfig.minEarlyPeakGap &&
+                peakData.isEarlyPeak &&
+                peakData.fadePercent >= faderConfig.minFadePercent;
+
+              if (isQualifiedFader) {
+                console.log(`   ✅ ${candidate.symbol}: Early peak ${peakData.peakGapPercent.toFixed(1)}% → faded ${peakData.fadePercent.toFixed(1)}%`);
+
+                return {
+                  symbol: candidate.symbol,
+                  gapPercent: peakData.peakGapPercent,
+                  currentPrice: peakData.peakPrice,
+                  previousClose: candidate.previousClose,
+                  volume: candidate.dailyVolume,
+                  cumulativeVolume: 0,
+                  hod: candidate.dailyHigh,
+                  lastUpdated: Date.now(),
+                  peakTime: peakData.peakTime || undefined,
+                  openPrice: peakData.openPrice,
+                  fadePercent: peakData.fadePercent,
+                  isEarlyPeak: peakData.isEarlyPeak,
+                };
+              }
+              return null;
+            } catch (error) {
+              console.warn(`   ⚠️  ${candidate.symbol}: Error checking fader - ${error}`);
+              return null;
+            }
+          });
+
+          const faderResults = await Promise.all(faderPromises);
+          const qualifiedFaders = faderResults
+            .filter((stock): stock is GapStock => stock !== null)
+            .slice(0, faderConfig.maxAdditionalFaders); // Limit to max
+
+          if (qualifiedFaders.length > 0) {
+            qualifyingStocks.push(...qualifiedFaders);
+            console.log(`   ✅ Found ${qualifiedFaders.length} early gainer faders (added to results)`);
+          } else {
+            console.log(`   ℹ️  No early gainer faders found`);
+          }
+        } else {
+          console.log(`   ℹ️  No additional candidates for fader detection`);
+        }
+
+        console.log(`✅ Stage 2B complete: ${qualifyingStocks.length} total stocks (including faders)`);
+      }
 
       // STAGE 3: Filter by stock type (deferred to minimize API calls)
       console.log(`\n🔍 STAGE 3: Verifying stock types for ${qualifyingStocks.length} qualified symbols...`);
@@ -1815,20 +1994,57 @@ export class GapScanner {
     const [year, month, day] = dateString.split('-').map(Number);
     const date = new Date(year, month - 1, day); // month is 0-indexed
 
+    // NYSE market holidays (2023-2025) - add more years as needed
+    const marketHolidays = new Set([
+      // 2023
+      '2023-01-02', '2023-01-16', '2023-02-20', '2023-04-07', '2023-05-29',
+      '2023-06-19', '2023-07-04', '2023-09-04', '2023-11-23', '2023-12-25',
+      // 2024
+      '2024-01-01', '2024-01-15', '2024-02-19', '2024-03-29', '2024-05-27',
+      '2024-06-19', '2024-07-04', '2024-09-02', '2024-11-28', '2024-12-25',
+      // 2025
+      '2025-01-01', '2025-01-20', '2025-02-17', '2025-04-18', '2025-05-26',
+      '2025-06-19', '2025-07-04', '2025-09-01', '2025-11-27', '2025-12-25',
+    ]);
+
     // Move back one day
     date.setDate(date.getDate() - 1);
 
-    // If it's a weekend, go back to Friday
-    if (date.getDay() === 0) { // Sunday
-      date.setDate(date.getDate() - 2); // Go back to Friday
-    } else if (date.getDay() === 6) { // Saturday
-      date.setDate(date.getDate() - 1); // Go back to Friday
+    // Keep going back until we find a trading day (not weekend or holiday)
+    let iterations = 0;
+    const maxIterations = 10; // Safety limit
+
+    while (iterations < maxIterations) {
+      const year2 = date.getFullYear();
+      const month2 = String(date.getMonth() + 1).padStart(2, '0');
+      const day2 = String(date.getDate()).padStart(2, '0');
+      const currentDate = `${year2}-${month2}-${day2}`;
+
+      const dayOfWeek = date.getDay();
+      const isWeekend = dayOfWeek === 0 || dayOfWeek === 6; // Sunday or Saturday
+      const isHoliday = marketHolidays.has(currentDate);
+
+      if (!isWeekend && !isHoliday) {
+        // Found a trading day
+        if (isHoliday) {
+          console.log(`   ⚠️  Skipped market holiday: ${currentDate}`);
+        }
+        return currentDate;
+      }
+
+      // Not a trading day, go back one more day
+      if (isHoliday) {
+        console.log(`   ⚠️  ${currentDate} is a market holiday, going back further...`);
+      }
+      date.setDate(date.getDate() - 1);
+      iterations++;
     }
 
-    // Format the date in local time to avoid timezone issues
+    // Fallback if we hit max iterations
     const year2 = date.getFullYear();
     const month2 = String(date.getMonth() + 1).padStart(2, '0');
     const day2 = String(date.getDate()).padStart(2, '0');
+    console.warn(`⚠️  Warning: Hit max iterations finding previous trading day for ${dateString}`);
     return `${year2}-${month2}-${day2}`;
   }
 

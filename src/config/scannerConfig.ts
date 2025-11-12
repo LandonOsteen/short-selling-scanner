@@ -195,6 +195,28 @@ export interface ScannerConfig {
 
     // Minimum average volume threshold for symbol discovery (no longer used - discovery based on gap % only)
     minVolumeForDiscovery: number; // 25000 (deprecated, kept for compatibility)
+
+    // Early Gainer Detection - Captures stocks that were top gainers early but faded
+    // These are often the best short candidates (full roundtrip moves)
+    earlyGainerDetection: {
+      // Enable detection of early peak + fade stocks
+      enabled: boolean; // true = capture early gainer faders
+
+      // Minimum gap % required for early peak (higher than normal to catch true movers)
+      minEarlyPeakGap: number; // 20.0 = 20% minimum peak during early hours
+
+      // Lower volume threshold for faders (they often have lower EOD volume)
+      minDailyVolumeForFaders: number; // 500000 = 500K shares (lower than normal)
+
+      // Maximum number of additional fader stocks to include
+      maxAdditionalFaders: number; // 50 = up to 50 extra faders
+
+      // Time windows for "early" peak detection (ET hours)
+      earlyPeakWindowEnd: string; // "08:30" = peak must occur before 8:30 AM
+
+      // Minimum fade percentage from peak to qualify as "fader"
+      minFadePercent: number; // 40.0 = must fade at least 40% from peak
+    };
   };
 
   // Development and Testing
@@ -247,14 +269,14 @@ export const defaultScannerConfig: ScannerConfig = {
     },
 
     toppingTail5m: {
-      minClosePercent: 0.0, // 60% down the candle
+      minClosePercent: 0.4, // 60% down the candle
       mustCloseRed: false,
       minBarVolume: 5000,
       maxBarVolume: 50000000, // 50M shares max to filter data errors
-      minShadowToBodyRatio: 1.5, // Upper shadow must be at least 0.5x the body
+      minShadowToBodyRatio: 1.0, // Upper shadow must be at least 0.8x the body
       requireStrictHODBreak: true, // Strict mode: high must break HOD
-      maxHighDistanceFromHODPercent: 15.0, // High can be within 20% of HOD (only in loose mode)
-      maxCloseDistanceFromHODPercent: 20.0, // Close must be within 15% of HOD
+      maxHighDistanceFromHODPercent: 50.0, // High can be within 20% of HOD (only in loose mode)
+      maxCloseDistanceFromHODPercent: 50.0, // Close must be within 15% of HOD
     },
 
     ema200TapReject: {
@@ -294,6 +316,14 @@ export const defaultScannerConfig: ScannerConfig = {
     maxSymbolsToAnalyze: 100, // Increased from 20 to 100 to capture more symbols
     minDailyVolume: 2000000, // 2M daily volume minimum (end-of-day total) - filters low-activity stocks for backtesting
     minVolumeForDiscovery: 25000, // Reduced from 50000 to 25000 for more discovery
+    earlyGainerDetection: {
+      enabled: true, // Enable early gainer fader detection
+      minEarlyPeakGap: 20.0, // 20% minimum peak in early hours
+      minDailyVolumeForFaders: 500000, // 500K shares (lower threshold for faders)
+      maxAdditionalFaders: 50, // Up to 50 additional fader stocks
+      earlyPeakWindowEnd: '08:30', // Peak must occur before 8:30 AM ET
+      minFadePercent: 40.0, // Must fade at least 40% from peak to opening
+    },
   },
 
   development: {
